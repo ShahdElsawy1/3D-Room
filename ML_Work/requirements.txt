@@ -1,0 +1,13 @@
+# Core (CPU-safe, used by every stage and by the tests)
+numpy>=1.24
+opencv-python-headless>=4.8
+Pillow>=10.0
+requests>=2.31
+matplotlib>=3.7
+pytest>=7.0
+
+# GPU stages (already present on Kaggle GPU images; installed by scripts/setup_kaggle.sh otherwise)
+# torch, torchvision          -> VGGT
+# vggt                        -> git clone https://github.com/facebookresearch/vggt (VGGT_DIR)
+# gsplat + examples/ checkout -> 3DGS trainer (GSPLAT_DIR)
+# colmap + (glomap | colmap>=3.14 global_mapper) -> GLOMAP stage
