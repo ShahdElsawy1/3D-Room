@@ -18,11 +18,11 @@ Everything for one edit lives under the project folder, next to Week 1's layout,
 ```
 <project>/edits/<edit_id>/
   request.json                  ref_frame, clicks, prompt, seeds (written by the backend)
-  masks/<frame_name>.png        A: 8-bit single channel, 0 = background, 255 = object,
+  masks/<frame_stem>.png        A: 8-bit single channel, 0 = background, 255 = object,
                                    exactly the size of frames/images/<frame_name> (no padding, no resize)
   masks/index.json              A: see below
   candidates/seed_<n>.png       B: edited reference frame, one per seed (the user picks one)
-  edited/<frame_name>.png       B: final composited frames, PNG (lossless, see note)
+  edited/<frame_stem>.png       B: final composited frames, PNG (lossless, see note)
   edit_report.json              B: per-frame seconds, peak VRAM, model, dtype, quality metrics
   scene/images/                 C/A: rebuild input = original images with edited ones replaced, same names
   gs/, export/                  C/A: rebuilt splat, same layout and file names as Week 1

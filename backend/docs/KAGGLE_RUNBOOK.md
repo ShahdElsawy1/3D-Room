@@ -67,3 +67,45 @@ is unknown, and local tests run at ~40 MB/s.
   tested on Windows (`taskkill /T`), where the stage grandchild did die. Confirm with `nvidia-smi` in the cancel drill.
 - `scene/images` and `poses/*/images` are symlinks on Kaggle. The worker tars with `dereference=True`, which was tested
   locally with A's real stage 3. Windows fell back to copying, so the symlink branch itself only runs on Kaggle.
+
+## 6. Week 2 (M7): diffusion benchmark on the T4s
+Tested locally only with a fake model. These steps measure the real model and fill deliverable 4 (VRAM and timing
+table). Do them in the same session as the Week 1 run: start the worker with `--keep-workspace` so the frames stay in
+`/kaggle/working/workspace/<project_id>/`. ~1–2 h of GPU quota (download included).
+
+Prerequisites: accept the FLUX 3 Image Klein license on huggingface.co with your account, create a read token, add it
+as Kaggle Secret **`HF_TOKEN`**. Keep the HF cache out of `/kaggle/working` (20 GB output limit); the default
+`~/.cache/huggingface` is fine.
+
+```python
+import os
+from kaggle_secrets import UserSecretsClient
+os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+E = "/kaggle/working/repo/backend/editing"
+P = "/kaggle/working/workspace/<project_id>"          # <- the project of the Week 1 run
+!pip install -q -r $E/requirements-kaggle.txt
+!python $E/bench_t4.py --out /kaggle/working/bench_t4.json     # ~2 min: options A/B/C/D, linear + attention
+!ls $P/frames/images | head -40                                # pick 3 consecutive frames with a big object
+```
+Until Person A's masks exist, draw a box around the object (look at the frame with `PIL.Image.open(...)`):
+```python
+!python $E/make_box_masks.py --project-dir $P --edit-id bench --box 300,180,620,420 \
+        --frames frame_000010.jpg,frame_000011.jpg,frame_000012.jpg
+R = f"python {E}/run_edit.py"
+A = f"--project-dir {P} --edit-id bench --prompt 'make the sofa dark green leather'"
+!{R} preview {A} --model klein --precision bf16      --seeds 0,1,2    # option A
+!{R} preview {A} --model klein --precision bf16-fp32 --seeds 0        # option B
+!{R} preview {A} --model klein --precision fp8-bf16  --seeds 0        # option D
+!{R} frames  {A} --model klein --precision bf16 --chosen-seed 0       # reference-conditioned frames
+!cat {P}/edits/bench/edit_report.json
+```
+| Check | Expected | If not |
+|---|---|---|
+| bench_t4 rows | A and B slow, C fast, `nan_or_inf` false for A/B/D | an `error` in a row = that dtype path has no kernel on Turing: note it, it rules the option out |
+| preview | `candidates/seed_*.png`, report `seconds`, `peak_vram_mb` per GPU | OOM with `split` → `--placement offload`; error mentioning `.transformer` or layerwise casting → option B/D unsupported for this pipeline, note it |
+| frames | `edited/*.png`, `changed_outside_px: 0` for every frame | |
+| `degenerate: true` | never for A/B/D | black/flat output = NaNs: report it |
+
+Option C (fp16) only after the team decides it: add `--precision fp16 --allow-fp16`. Qwen comparison: same
+commands with `--model qwen-turbo` (bf16 does not fit one T4, so try `--placement offload` and `--precision fp8-bf16`).
+Save `bench_t4.json` and `edit_report.json` (and a few `candidates/` + `edited/` PNGs) and send them to Person B.

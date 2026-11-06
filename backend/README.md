@@ -28,7 +28,9 @@ so a dropped Kaggle session can't break the API. The spec warns about this in §
 | M2 | reconstruction tasks, status, real progress, worker claim/lease/retry/cancel API, worker token | done, tested |
 | M3 | resumable chunked artifact upload, validation, atomic promotion, scene endpoint, signed Range downloads | done, tested (incl. real Kaggle output) |
 | M4 | Kaggle worker (`worker/kaggle_worker.py`) + its own notebook, stale-upload cleanup | done, tested locally with a CPU stub; **Kaggle GPU + tunnel run pending** ([runbook](docs/KAGGLE_RUNBOOK.md)) |
-| M6–M9 | Week 2: diffusion editing, edit tasks, rebuild, before/after | planned |
+| M6 | Week 2 model research (FLUX 3 Klein vs Qwen-Image-2.1, T4 precision) | done ([research](docs/W2_DIFFUSION_RESEARCH.md)) |
+| M7 | diffusion edit stage (`editing/`): reference frame x seeds, reference-conditioned frames, crop + hard mask composite, VRAM/time report | done, tested on CPU with a fake model; **T4 benchmark pending** ([runbook §6](docs/KAGGLE_RUNBOOK.md)) |
+| M8–M9 | Week 2 backend: edit tasks + endpoints, scene versions; report tables | planned |
 
 ## 1. Run locally
 

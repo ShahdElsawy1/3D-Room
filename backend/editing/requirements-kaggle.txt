@@ -1,0 +1,6 @@
+# Diffusion editing stage on the Kaggle worker (torch, numpy, pillow, opencv are preinstalled there).
+# Both model cards require diffusers from git (Klein: ModularPipeline; Qwen: QwenImage21Pipeline, PR #14950).
+git+https://github.com/huggingface/diffusers.git
+transformers>=5.17.0
+accelerate
+huggingface_hub
