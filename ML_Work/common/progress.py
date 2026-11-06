@@ -16,6 +16,7 @@ inspected (or replayed) when no backend is reachable. Network errors never crash
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -51,7 +52,10 @@ class Progress:
                 self._last_post = now
                 try:
                     import requests
-                    requests.post(f"{self.url}/tasks/{self.task_id}/progress", json=rec, timeout=5)
+                    # optional worker token (backend exposed via Cloudflare); unset -> no header, as before
+                    token = os.environ.get("W1_WORKER_TOKEN")
+                    headers = {"Authorization": f"Bearer {token}"} if token else None
+                    requests.post(f"{self.url}/tasks/{self.task_id}/progress", json=rec, headers=headers, timeout=5)
                 except Exception as e:  # backend down / tunnel dropped: keep working
                     print(f"[progress] backend unreachable ({e.__class__.__name__}); continuing", flush=True)
 
