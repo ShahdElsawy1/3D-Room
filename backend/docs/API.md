@@ -234,5 +234,58 @@ Anything else is `404`.
 
 ---
 
-## Coming next
-- Week 2: edit sessions, masks, seed previews, accept/regenerate, frame-x-of-N progress, rebuild, `?version=` for before/after
+## Week 2: edit an object (spec §4.5)
+
+Same conventions as above: Bearer JWT, task objects, signed file URLs that work in `<img>` tags. Every step that needs
+the GPU creates a **task**. Show its progress exactly like the reconstruction: poll `GET /tasks/{edit.current_task.id}`.
+One task at a time per project (`409` otherwise). An edit's files never replace the original scene.
+
+### The flow and the calls
+
+| UI step (spec) | Call | Then |
+|---|---|---|
+| frame picker | `GET /projects/{id}/frames` → `[{name, index, url, width, height, camera_id}]` | `camera_id` = `id` in `/scene` `cameras` (snap the viewer to it) |
+| 1. click the object | `POST /projects/{id}/edits` `{"ref_frame": "000012.jpg", "clicks": [{"x": 431, "y": 288, "positive": true}]}` → `201` edit | poll the task; when `edit.status == "mask_ready"` show `edit.ref_mask_url` over the frame |
+| 2. add/remove points | `POST /edits/{eid}/clicks` `{"clicks": [...all clicks...]}` → `202` | same as 1 |
+| 4. track | `POST /edits/{eid}/track` → `202` | `status: "tracked"` |
+| 4. grid with masks | `GET /edits/{eid}/frames` → `[{name, url, mask_url, present, tracked_present, removed, source, score}]` | draw `mask_url` over `url` for `present` frames |
+| 4. untick / re-tick wrong frames | `PATCH /edits/{eid}/frames` `{"remove": ["000031.jpg"], "restore": []}` → `200` | no task: instant |
+| 4. fallback: mark missed frames | `PATCH /edits/{eid}/frames` `{"add": [{"name": "000040.jpg", "clicks": [{"x": 500, "y": 300}]}]}` | a `segment` task for those frames; then they are `present` with `source: "user"` |
+| 3+5. prompt, first frame | `POST /edits/{eid}/preview` `{"prompt": "make the sofa dark green leather", "num_seeds": 3}` → `202` | `status: "preview_ready"` |
+| 5. show the choices | `GET /edits/{eid}/candidates` → `[{seed, url, crop_url, seconds}]` | user picks one, or calls `preview` again (new seeds) |
+| 5. accept | `POST /edits/{eid}/accept` `{"seed": 123456}` → `202` | progress `stage` = `"editing frame x of N"` (show it as text) → `status: "edited"` |
+| 6. rebuild | `POST /edits/{eid}/rebuild` `{"mode": "finetune"}` (or `"scratch"`) → `202` | `status: "done"`, `edit.scene_version` is set |
+| 6. before/after toggle | `GET /projects/{id}/scene/versions` → `[{version: "original"}, {version: "<eid>", prompt}]`, then `GET /projects/{id}/scene?version=<eid>` | same scene object as Week 1; load its `splat.url` |
+
+Other: `GET /projects/{id}/edits` (history, newest first), `GET /edits/{eid}`, `DELETE /edits/{eid}` (`204`; `409`
+while its task runs; the original scene stays), `POST /tasks/{id}/cancel` as in Week 1.
+
+### Edit object
+```json
+{
+  "id": "3f9c...", "project_id": "a1b2...", "status": "preview_ready",
+  "ref_frame": "000012.jpg", "clicks": [{"x": 431, "y": 288, "positive": true}],
+  "prompt": "make the sofa dark green leather", "chosen_seed": null, "removed_frames": ["000031.jpg"],
+  "current_task": {"id": "77aa...", "type": "edit_preview", "status": "done", "stage": "done", "progress": 100.0,
+                   "error": null, "created_at": "..."},
+  "tasks": ["...every task of this edit, oldest first..."],
+  "ref_mask_url": "/projects/a1b2.../files/edits/3f9c.../masks/000012.png?t=...",
+  "scene_version": null, "created_at": "...", "updated_at": "..."
+}
+```
+`status`: `segmenting → mask_ready → tracking → tracked → previewing → preview_ready → editing → edited → rebuilding →
+done`. A failed or cancelled step shows as `<type>_failed` / `<type>_cancelled` (e.g. `edit_apply_failed`): show
+`current_task.error` and let the user retry that step.
+
+### Errors
+| Code | When |
+|---|---|
+| `409` | another task of this project is pending/running · the step's input is missing (no mask yet, no candidates yet, nothing edited yet) · `POST /reconstruct` while the project has edits |
+| `422` | unknown frame · click outside the frame · removing the reference frame · seed not among the candidates · `precision: "fp16"` (not allowed unless the server enables it) |
+
+### Notes
+- Click coordinates are in the frame's own pixels (`width` × `height` from `/frames`), origin top-left.
+- Model and precision default to the server's settings (FLUX 3 Klein, bf16). `preview` accepts `"model"` and
+  `"precision"` for experiments; `accept` reuses what the preview used.
+- The stages behind `segment`, `track` and `rebuild` are Person A's / C's. Until they exist on the worker these tasks
+  fail with an error naming the missing script.

@@ -55,9 +55,35 @@ KINDS: dict[str, Kind] = {
     "cameras": Kind("export/cameras.json", False),
     "scene_meta": Kind("export/scene_meta.json", False),
 }
+# Week 2: everything of one edit lives under edits/<edit_id>/ and its artifacts have version = <edit_id>, so the
+# original reconstruction is never overwritten (spec: keep the original splat for the before/after toggle).
+EDIT_KINDS: dict[str, Kind] = {
+    "masks": Kind("masks", True),               # Person A: <frame stem>.png (0/255) + index.json
+    "candidates": Kind("candidates", True),     # Person B: reference frame edited with several seeds
+    "edited": Kind("edited", True),             # Person B: composited frames (PNG) + index.json
+    "edit_report": Kind("edit_report.json", False),
+    # the rebuilt scene of this edit: same names as Week 1, below edits/<edit_id>/
+    "splat": Kind("export/scene.splat", False),
+    "ply": Kind("export/scene.ply", False),
+    "cameras": Kind("export/cameras.json", False),
+    "scene_meta": Kind("export/scene_meta.json", False),
+    "gs": Kind("gs", True),
+    "metrics": Kind("metrics", True),
+}
 # Spec: frames, poses + intrinsics + sparse point cloud (scene/sparse/0) and the splat must be stored for Week 2;
 # cameras.json + scene_meta.json are what the viewer needs.
-REQUIRED = {"reconstruct": ["frames", "scene", "splat", "cameras", "scene_meta"]}
+REQUIRED = {"reconstruct": ["frames", "scene", "splat", "cameras", "scene_meta"],
+            "segment": ["masks"], "track": ["masks"],
+            "edit_preview": ["candidates", "edit_report"], "edit_apply": ["edited", "edit_report"],
+            "rebuild": ["splat", "cameras", "scene_meta"]}
+
+
+def kind_spec(kind: str, version: str = "original") -> Kind | None:
+    """Where an artifact of `kind` lives for `version` ("original" or an edit id). None = not allowed."""
+    if version == "original":
+        return KINDS.get(kind)
+    k = EDIT_KINDS.get(kind)
+    return Kind(f"edits/{version}/{k.path}", k.is_dir) if k else None
 
 SPLAT_RECORD_BYTES = 32       # antimatter15 .splat: 3xf32 pos, 3xf32 scale, 4xu8 rgba, 4xu8 rot
 
@@ -155,12 +181,30 @@ def _has(folder: Path, stem: str) -> bool:
     return any((folder / f"{stem}{ext}").is_file() for ext in (".bin", ".txt"))
 
 
-def validate(kind: str, root: Path) -> dict:
-    """`root` is the project-shaped folder containing the artifact. Raises ArtifactError with a clear reason."""
-    k = KINDS[kind]
+def validate(kind: str, root: Path, path: str | None = None) -> dict:
+    """`root` is the project-shaped folder containing the artifact at `path` (default: the original location).
+    Raises ArtifactError with a clear reason."""
+    k = Kind(path, KINDS.get(kind, EDIT_KINDS.get(kind)).is_dir) if path else KINDS[kind]
     p = root / k.path
     info: dict = {}
-    if kind == "frames":
+    if kind == "masks":
+        idx = _json(p / "index.json") if (p / "index.json").is_file() else None
+        if not isinstance(idx, dict) or not isinstance(idx.get("frames"), list):
+            raise ArtifactError("masks/index.json is missing or has no 'frames' list")
+        present = [f.get("name", "") for f in idx["frames"] if f.get("present")]
+        missing = [n for n in present if not (p / (Path(n).stem + ".png")).is_file()]
+        if missing:
+            raise ArtifactError(f"masks: {len(missing)} present frame(s) without a mask png, e.g. {missing[0]}")
+        info.update(num_frames=len(idx["frames"]), num_present=len(present), method=idx.get("method"))
+    elif kind in ("candidates", "edited"):
+        idx = _json(p / "index.json") if (p / "index.json").is_file() else None
+        key = "seeds" if kind == "candidates" else "edited"
+        if not isinstance(idx, dict) or not idx.get(key):
+            raise ArtifactError(f"{kind}/index.json is missing or has no '{key}'")
+        info["count"] = len(idx[key])
+    elif kind == "edit_report":
+        _json(p)
+    elif kind == "frames":
         imgs = sorted((p / "images").glob("*.jpg")) + sorted((p / "images").glob("*.png"))
         if not imgs:
             raise ArtifactError("frames/images/ contains no .jpg/.png frames")
@@ -188,7 +232,7 @@ def validate(kind: str, root: Path) -> dict:
         info["methods"] = sorted(methods)
     elif kind in ("gs", "metrics"):
         if not p.is_dir() or not any(p.rglob("*")):
-            raise ArtifactError(f"{k.path}/ is empty")
+            raise ArtifactError(f"{Path(k.path).name}/ is empty")
         if kind == "gs":
             info["checkpoints"] = sorted(str(x.relative_to(p).as_posix()) for x in p.rglob("*.pt"))
     elif kind == "splat":

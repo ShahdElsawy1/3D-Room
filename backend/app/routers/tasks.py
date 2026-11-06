@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..deps import get_current_user, get_db, get_owned_project, get_settings, require_worker
-from ..models import Project, Task, TaskStatus, TaskType, User, utcnow
+from ..models import Edit, Project, Task, TaskStatus, TaskType, User, utcnow
 from ..schemas import ProgressAck, ProgressIn, ReconstructRequest, StageInfo, TaskOut
 from ..tasks import (ACTIVE, FINAL, MAX_PROGRESS_BEFORE_DONE, RECONSTRUCT_STAGES, lease_until, queue_position,
                      requeue_expired)
@@ -46,6 +46,9 @@ def reconstruct(body: ReconstructRequest | None = None, project: Project = Depen
     requeue_expired(db)
     if db.scalar(select(Task.id).where(Task.project_id == project.id, Task.status.in_(ACTIVE)).limit(1)):
         raise HTTPException(status.HTTP_409_CONFLICT, "This project already has a pending or running task")
+    if db.scalar(select(Edit.id).where(Edit.project_id == project.id).limit(1)):
+        # new frames would not match the edits' masks and edited frames
+        raise HTTPException(status.HTTP_409_CONFLICT, "This project has edits; delete them before reconstructing again")
     params = (body or ReconstructRequest()).model_dump(exclude_none=True)
     t = Task(project_id=project.id, type=TaskType.reconstruct.value, params=params,
              max_attempts=settings.max_attempts, stage="queued")

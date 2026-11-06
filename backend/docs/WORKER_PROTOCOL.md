@@ -130,6 +130,37 @@ Their targets must already be uploaded, so the **upload order is `frames`, `pose
   user cancel (pipeline **and its grandchild** killed), lease lost mid-run, bad token, idle exit, resumable video download.
 - Not yet: GPU run on Kaggle through a Cloudflare tunnel. Steps and expected results: [KAGGLE_RUNBOOK.md](KAGGLE_RUNBOOK.md).
 
+## Week 2 tasks (M8)
+Types `segment`, `track`, `edit_preview`, `edit_apply`, `rebuild`. The claim reply then also carries:
+```json
+{"edit_id": "3f9c...", "stage": "run_edit",
+ "stage_args": ["frames", "--edit-id", "3f9c...", "--prompt", "...", "--model", "klein", "--precision", "bf16", ...],
+ "inputs":  [{"kind": "frames", "version": "original", "path": "frames", "is_dir": true, "required": true}, ...],
+ "outputs": [{"kind": "edited", "version": "3f9c...", "path": "edits/3f9c.../edited", "is_dir": true, "required": true}, ...]}
+```
+The worker:
+1. deletes local copies of the outputs (an earlier attempt's files must not be uploaded), then downloads every input
+   with `GET /worker/projects/{pid}/artifacts/{kind}?version=` (folders come as a `.tar` named by project path) into
+   `<root>/<project_id>/`; a missing optional input is a `404` and skipped;
+2. runs `python <script> <stage_args> --project-dir <root>/<pid> --backend-url <url> --task-id <id>`, where `stage`
+   `run_edit` = `backend/editing/run_edit.py` (Person B) and `w2_segment` / `w2_track` / `w2_rebuild` =
+   `<ml-dir>/stages/<stage>.py` (Person A / C, `--stages-dir` to override). The script posts progress itself;
+3. uploads the outputs with the normal chunked upload. **The backend takes the version from the task**, so an edit
+   task can only write `edits/<edit_id>/...` and never the original reconstruction;
+4. completes with `result` = stage seconds, upload MB/s and, for diffusion tasks, the `edit_report.json` summary
+   (model, dtype option, s/frame, peak VRAM per GPU, outside-mask leak, colour drift).
+
+Required outputs: `segment`/`track` → `masks`; `edit_preview` → `candidates` + `edit_report`; `edit_apply` →
+`edited` + `edit_report`; `rebuild` → `splat` + `cameras` + `scene_meta` (+ optional `metrics`, `ply`).
+`--types` lets one worker per GPU take different tasks (spec §3: GPU 0 diffusion, GPU 1 SAM + 3DGS), e.g.
+`CUDA_VISIBLE_DEVICES=0 ... --types edit_preview,edit_apply` and `CUDA_VISIBLE_DEVICES=1 ... --types reconstruct,segment,track,rebuild`.
+
+Tested (M8, `tests/test_edits.py`): API rules and the whole flow through the real worker process: click → refine →
+track → remove + fallback-add frames → preview (Person B's real stage, fake model) → accept → rebuild → `?version=`,
+with a check that **no original file changed**; a failing stage (retry, then its own error), a missing stage script
+(clear error, no retry). Person A/C's stages were replaced by CPU stand-ins in `tests/stubs_w2/` that follow the
+contract above.
+
 ## Stale uploads
 Unfinished uploads are removed when their task has ended or after `BACKEND_UPLOAD_STALE_HOURS` (24 h) without a chunk,
 together with their `.part` file. So are orphaned `.part` files and the staging folders of failed or cancelled tasks.

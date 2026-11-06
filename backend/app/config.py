@@ -51,6 +51,14 @@ class Settings:
     # lifetime of the signed file URLs returned by GET /projects/{id}/scene (viewers can't send auth headers)
     file_url_ttl_minutes: int = field(default_factory=lambda: int(_env("FILE_URL_TTL_MINUTES", "360")))
 
+    # Week 2 diffusion editing defaults (research doc §6): FLUX 3 Klein, bf16 (option A). fp16 (option C) is only
+    # possible when the team switches it on here; the edit stage refuses it otherwise.
+    edit_model: str = field(default_factory=lambda: _env("EDIT_MODEL", "klein"))
+    edit_precision: str = field(default_factory=lambda: _env("EDIT_PRECISION", "bf16"))
+    edit_placement: str = field(default_factory=lambda: _env("EDIT_PLACEMENT", "split"))
+    edit_long_side: int = field(default_factory=lambda: int(_env("EDIT_LONG_SIDE", "768")))
+    edit_allow_fp16: bool = field(default_factory=lambda: _env("EDIT_ALLOW_FP16", "0") == "1")
+
     cors_origins: list[str] = field(default_factory=lambda: [o.strip() for o in _env(
         "CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()])
 

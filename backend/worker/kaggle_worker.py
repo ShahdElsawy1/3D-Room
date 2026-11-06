@@ -9,6 +9,11 @@ One task:
     (it POSTs real stage progress itself) -> heartbeat thread renews the lease and stops the pipeline if the user
     cancels or the lease is lost -> upload artifacts (resumable chunks, Person A's layout) -> complete | fail
 
+Week 2 tasks (segment, track, edit_preview, edit_apply, rebuild) follow the same loop, driven by the claim reply:
+    claim -> download the listed input artifacts into <root>/<project_id>/ -> run the stage script
+    (Person B's backend/editing/run_edit.py, or Person A/C's ML_Work/stages/w2_*.py) -> upload the listed outputs
+    (version = the edit id, so the original scene is never overwritten) -> complete | fail
+
 Nothing in ML_Work is modified or imported; the pipeline is only run. Needs: Python 3.10+, requests.
 """
 from __future__ import annotations
@@ -47,6 +52,8 @@ UPLOADS = [
     ("gs", "gs", True, False),                         # checkpoint(s): only with --upload-checkpoint
 ]
 NUMERIC = (int, float, bool)
+ALL_TYPES = ["reconstruct", "segment", "track", "edit_preview", "edit_apply", "rebuild"]
+EDIT_SCRIPT = Path(__file__).resolve().parent.parent / "editing" / "run_edit.py"   # Person B's diffusion stage
 
 
 def log(msg: str) -> None:
@@ -132,6 +139,37 @@ def make_tar(project: Path, rel: str, out: Path) -> Path:
     return out
 
 
+def fetch_artifact(api: Api, pid: str, ref: dict, project: Path, tmp: Path) -> bool:
+    """Week 2 input: one stored artifact -> its place in the local project folder. False if not stored (optional)."""
+    url = f"/worker/projects/{pid}/artifacts/{ref['kind']}?version={ref['version']}"
+    r = api.call("GET", url, ok=(200, 404), stream=True)
+    if r.status_code == 404:
+        if ref["required"]:
+            raise RuntimeError(f"required input {ref['kind']} ({ref['version']}) is not stored on the backend")
+        return False
+    dst = project / ref["path"]
+    if dst.is_symlink() or dst.is_file():             # stale copy from an earlier task in this session
+        dst.unlink()
+    elif dst.is_dir():
+        shutil.rmtree(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp / f"in_{ref['kind']}_{ref['version']}" if ref["is_dir"] else dst
+    with target.open("wb") as f:
+        for block in r.iter_content(1 << 20):
+            f.write(block)
+    if ref["is_dir"]:
+        with tarfile.open(target) as tf:
+            for m in tf.getmembers():                 # the backend names entries by their path in the project
+                if not (m.name == ref["path"] or m.name.startswith(ref["path"] + "/")):
+                    raise RuntimeError(f"unexpected entry {m.name!r} in {ref['kind']} archive")
+            if hasattr(tarfile, "data_filter"):         # Python >= 3.11.4: no links/devices outside project
+                tf.extractall(project, filter="data")
+            else:
+                tf.extractall(project)
+        target.unlink()
+    return True
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """Stop the pipeline AND its stage subprocesses (they hold the GPU)."""
     if proc.poll() is not None:
@@ -202,12 +240,25 @@ class Worker:
         self.api = Api(a.backend_url, a.token)
         self.root = Path(a.root).resolve()
         self.ml_dir = Path(a.ml_dir).resolve() if a.ml_dir else None
-        self.pipeline = Path(a.pipeline).resolve() if a.pipeline else (self.ml_dir / "run_pipeline.py")
+        self.pipeline = Path(a.pipeline).resolve() if a.pipeline else (
+            self.ml_dir / "run_pipeline.py" if self.ml_dir else None)
         self.tmp = self.root.parent / "_worker_tmp"
+        self.types = [t for t in a.types.split(",") if t]
+        self.stages_dir = Path(a.stages_dir).resolve() if a.stages_dir else (
+            self.ml_dir / "stages" if self.ml_dir else None)
+        self.edit_script = Path(a.edit_script).resolve() if a.edit_script else EDIT_SCRIPT
+
+    def script_for(self, stage: str) -> Path | None:
+        if stage == "run_edit":
+            return self.edit_script
+        return self.stages_dir / f"{stage}.py" if self.stages_dir else None
 
     # -------------------------------------------------- start-up
     def check(self) -> None:
-        if not self.pipeline.is_file():
+        unknown = [t for t in self.types if t not in ALL_TYPES]
+        if unknown:
+            raise SystemExit(f"unknown task types {unknown}; choose from {ALL_TYPES}")
+        if "reconstruct" in self.types and not (self.pipeline and self.pipeline.is_file()):
             raise SystemExit(f"pipeline not found: {self.pipeline} (set --ml-dir to the ML_Work folder)")
         try:
             r = self.api.s.get(self.api.base + "/worker/ping", timeout=20)
@@ -222,7 +273,7 @@ class Worker:
         if self.a.heartbeat_seconds >= lease / 2:
             self.a.heartbeat_seconds = max(10, lease / 3)
         log(f"connected to {self.api.base} as '{self.a.worker_id}' (lease {lease}s, "
-            f"heartbeat {self.a.heartbeat_seconds:.0f}s)")
+            f"heartbeat {self.a.heartbeat_seconds:.0f}s, tasks {','.join(self.types)})")
 
     # -------------------------------------------------- main loop
     def loop(self) -> int:
@@ -231,7 +282,7 @@ class Worker:
         while True:
             try:
                 r = self.api.call("POST", "/worker/claim", ok=(200, 204),
-                                  json={"worker_id": self.a.worker_id, "types": ["reconstruct"]})
+                                  json={"worker_id": self.a.worker_id, "types": self.types})
             except RuntimeError as e:
                 log(f"claim failed: {e}")
                 r = None
@@ -251,6 +302,8 @@ class Worker:
 
     # -------------------------------------------------- one task
     def process(self, claim: dict) -> None:
+        if claim.get("stage"):
+            return self.process_stage(claim)
         task = claim["task"]
         tid, pid = task["id"], task["project_id"]
         log(f"claimed task {tid} (project {pid}, attempt {task['attempts']}/{task['max_attempts']}, "
@@ -301,9 +354,105 @@ class Worker:
             if not self.a.keep_workspace:
                 shutil.rmtree(self.root / pid, ignore_errors=True)
 
+    # -------------------------------------------------- one week 2 task
+    def process_stage(self, claim: dict) -> None:
+        task = claim["task"]
+        tid, pid, eid, stage = task["id"], task["project_id"], claim["edit_id"], claim["stage"]
+        log(f"claimed {task['type']} task {tid} (project {pid}, edit {eid}, attempt "
+            f"{task['attempts']}/{task['max_attempts']})")
+        hb = Heartbeat(self.api, tid, self.a.worker_id, self.a.heartbeat_seconds)
+        hb.start()
+        t0 = time.perf_counter()
+        project = self.root / pid
+        tmp = self.tmp / tid
+        try:
+            script = self.script_for(stage)
+            if script is None or not script.is_file():
+                owner = "Person B" if stage == "run_edit" else "Person A/C (ML_Work/stages)"
+                self.fail(tid, f"stage script for '{task['type']}' not found: {script} ({owner})", retryable=False)
+                return
+            tmp.mkdir(parents=True, exist_ok=True)
+            # outputs of an earlier attempt must not be re-uploaded. Cleared BEFORE the inputs are fetched: an
+            # output can also be an input (track reads the reference mask and writes all masks to masks/)
+            for ref in claim["outputs"]:
+                out = project / ref["path"]
+                if out.is_dir():
+                    shutil.rmtree(out)
+                elif out.exists():
+                    out.unlink()
+            hb.extra = {"stage": "downloading inputs", "progress": 0}
+            hb.beat()
+            got = []
+            for ref in claim["inputs"]:
+                if hb.cancelled.is_set():
+                    raise LeaseLost(hb.reason)
+                if fetch_artifact(self.api, pid, ref, project, tmp):
+                    got.append(ref["kind"])
+            log(f"inputs downloaded: {', '.join(got)} ({time.perf_counter() - t0:.1f}s)")
+            hb.extra = {}
+            t1 = time.perf_counter()
+            cmd = [sys.executable, str(script), *claim["stage_args"], "--project-dir", str(project),
+                   "--backend-url", self.api.base, "--task-id", tid]
+            ok, tail = self.run_cmd(tid, cmd, script.parent, hb)
+            if hb.cancelled.is_set():
+                log(f"task {tid} abandoned: {hb.reason}")
+                return
+            stage_s = time.perf_counter() - t1
+            if not ok:
+                self.fail(tid, f"{stage} failed:\n" + tail, retryable=True)
+                return
+            missing = [r["path"] for r in claim["outputs"] if r["required"] and not (project / r["path"]).exists()]
+            if missing:
+                self.fail(tid, f"{stage} finished but did not produce {missing}", retryable=False)
+                return
+            hb.extra = {"stage": "uploading results", "progress": 99}
+            hb.beat()
+            uploads = {}
+            for ref in claim["outputs"]:
+                src = project / ref["path"]
+                if not src.exists() or (ref["kind"] == "ply" and not self.a.upload_ply):
+                    continue
+                if hb.cancelled.is_set():
+                    raise LeaseLost(hb.reason)
+                t2 = time.perf_counter()
+                path = make_tar(project, ref["path"], tmp / f"{ref['kind']}.tar") if ref["is_dir"] else src
+                size = path.stat().st_size
+                self.upload_file(tid, ref["kind"], path)
+                dt = time.perf_counter() - t2
+                uploads[ref["kind"]] = {"mb": round(size / 2**20, 2), "seconds": round(dt, 1),
+                                        "mb_per_s": round(size / 2**20 / dt, 2) if dt > 0 else None}
+                log(f"uploaded {ref['kind']:<11} {size / 2**20:8.1f} MB in {dt:6.1f}s")
+            result = {"worker_id": self.a.worker_id, "host": platform.node(), "stage_seconds": round(stage_s, 1),
+                      "total_seconds": round(time.perf_counter() - t0, 1), "uploads": uploads}
+            report = project / "edits" / eid / "edit_report.json"
+            if task["type"] in ("edit_preview", "edit_apply") and report.exists():
+                rep = json.loads(report.read_text())
+                sec = rep.get("preview" if task["type"] == "edit_preview" else "frames", {})
+                result["edit"] = {"summary": sec.get("summary"),
+                                  **{k: sec.get(k) for k in ("model", "precision", "option", "placement",
+                                                              "load_seconds", "long_side")}}
+            if task["type"] == "rebuild":
+                result["stages"] = stage_metrics(project / "edits" / eid / "metrics")
+            self.api.call("POST", f"/worker/tasks/{tid}/complete", json={"worker_id": self.a.worker_id,
+                                                                          "result": result})
+            log(f"task {tid} done in {time.perf_counter() - t0:.1f}s (stage {stage_s:.1f}s)")
+        except LeaseLost as e:
+            log(f"task {tid} abandoned: lease lost ({e})")
+        except Exception as e:                          # noqa: BLE001
+            log(f"task {tid} error: {e!r}")
+            self.fail(tid, f"worker error: {e!r}", retryable=True)
+        finally:
+            hb.stop_evt.set()
+            shutil.rmtree(tmp, ignore_errors=True)
+            if not self.a.keep_workspace:
+                shutil.rmtree(project, ignore_errors=True)
+
     def run_pipeline(self, tid, pid, video, extra_args, hb) -> tuple[bool, str]:
         cmd = [sys.executable, str(self.pipeline), "--video", str(video), "--root", str(self.root),
                "--project", pid, "--backend-url", self.api.base, "--task-id", tid, *extra_args]
+        return self.run_cmd(tid, cmd, self.pipeline.parent, hb)
+
+    def run_cmd(self, tid, cmd, cwd: Path, hb) -> tuple[bool, str]:
         env = dict(os.environ, W1_WORKER_TOKEN=self.a.token, PYTHONUNBUFFERED="1", PYTHONDONTWRITEBYTECODE="1")
         log("$ " + " ".join(cmd))
         log_dir = self.tmp / tid
@@ -312,7 +461,7 @@ class Worker:
              {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         tail: deque[str] = deque(maxlen=60)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
-                                cwd=str(self.pipeline.parent), bufsize=1, errors="replace", **kw)
+                                cwd=str(cwd), bufsize=1, errors="replace", **kw)
 
         def pump():
             for line in proc.stdout:
@@ -409,10 +558,14 @@ def main(argv=None) -> int:
     ap.add_argument("--max-tasks", type=int, default=0)
     ap.add_argument("--max-idle-minutes", type=float, default=0, help="exit after this long without work (0 = never)")
     ap.add_argument("--keep-workspace", action="store_true", help="keep the local project folder after upload")
+    ap.add_argument("--types", default=",".join(ALL_TYPES),
+                    help="task types to claim, e.g. 'reconstruct' or 'edit_preview,edit_apply' (one worker per GPU)")
+    ap.add_argument("--stages-dir", default="", help="Week 2 stage scripts w2_*.py (default <ml-dir>/stages)")
+    ap.add_argument("--edit-script", default="", help="diffusion stage (default backend/editing/run_edit.py)")
     a = ap.parse_args(argv)
     if not a.token:
         ap.error("no worker token: set W1_WORKER_TOKEN or pass --token")
-    if not a.ml_dir and not a.pipeline:
+    if not a.ml_dir and not a.pipeline and "reconstruct" in a.types.split(","):
         ap.error("--ml-dir is required")
     return Worker(a).loop()
 

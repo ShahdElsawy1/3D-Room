@@ -1,4 +1,6 @@
-# Week 2 interfaces: proposal for Person A and Person C (draft, nothing implemented yet)
+# Week 2 interfaces: proposal for Person A and Person C
+
+**Status:** the backend side is implemented as written here (M8): endpoints in [API.md](API.md), worker contract in [WORKER_PROTOCOL.md](WORKER_PROTOCOL.md). Person A's and C's stages are still to be written; CPU stand-ins that follow this contract are in `backend/tests/stubs_w2/`. Changes are still possible: tell Person B.
 
 Goal: agree on files and endpoints **before** M7, so the three parts can be built in parallel and plugged together.
 Everything here is a proposal from Person B. Please answer the questions marked **Q** or change whatever doesn't fit.
@@ -54,8 +56,16 @@ Everything for one edit lives under the project folder, next to Week 1's layout,
    The worker can run two processes pinned with `CUDA_VISIBLE_DEVICES` if we want segment and edit tasks to overlap.
 3. Interactive click → mask goes through the queue (worker polls every few seconds). Is ~3–5 s per click acceptable,
    or should SAM stay loaded in the worker between clicks (a "session" task that stays alive while the user refines)?
-4. Your stage scripts: same style as Week 1 (`stages/s6_segment.py --project ... --frame ... --clicks ...`, writing
-   to the paths above, reporting progress with `common/progress.py`)? Then the worker only has to call them.
+4. Your stage scripts, same style as Week 1 (one process per stage, progress posted to the backend). The worker
+   already calls them like this (`--project-dir <root>/<project_id> --backend-url ... --task-id ...` appended):
+   - `ML_Work/stages/w2_segment.py --edit-id E --frame F --clicks '[{"x":..,"y":..,"positive":true}]'`
+     or `--add-frames '[{"name":F,"clicks":[...]}]'` (fallback); the existing `masks/` is already downloaded, so
+     keep the other frames' masks and update `index.json`.
+   - `ML_Work/stages/w2_track.py --edit-id E` (inputs: `frames/`, `scene/`, `export/cameras.json`, `masks/`).
+   - `ML_Work/stages/w2_rebuild.py --edit-id E --mode finetune|scratch` (Person C with A; inputs: `frames/`,
+     `scene/`, `edits/E/edited/`, `edits/E/masks/`, `gs/` if uploaded). Output: `edits/E/export/scene.splat`,
+     `cameras.json`, `scene_meta.json` (+ `edits/E/metrics/`), the same names as Week 1.
+   Working examples of all three (CPU stand-ins, no real model): `backend/tests/stubs_w2/`.
 
 ## 2. Endpoints (contract with Person C)
 Same conventions as Week 1 ([API.md](API.md)): JWT, task objects with `status/stage/progress/error`, signed file URLs.
@@ -70,7 +80,7 @@ One project can have several edits (edit history comes for free; undo = switch s
 | 4. grid with mask overlay | `GET /edits/{eid}/frames` | `[{name, url, mask_url, present, source, score}]` |
 | 4. remove wrong / mark missing frames | `PATCH /edits/{eid}/frames` `{remove:[names], add:[{name, clicks}]}` | `segment` task for the added frames |
 | 3+5. prompt + seeds for the first frame | `POST /edits/{eid}/preview` `{prompt, seeds:3}` | `edit_preview` task → `candidates:[{seed,url}]` |
-| 5. accept or regenerate | `POST /edits/{eid}/accept` `{seed}` or `preview` again | `edit_frames` task, stage `"editing frame x of N"` |
+| 5. accept or regenerate | `POST /edits/{eid}/accept` `{seed}` or `preview` again | `edit_apply` task, stage `"editing frame x of N"` |
 | 6. rebuild | `POST /edits/{eid}/rebuild` `{mode:"finetune"\|"scratch"}` | `rebuild` task |
 | 6. before/after | `GET /projects/{id}/scene?version=original\|<eid>` | same scene object as Week 1; `versions:[...]` lists both |
 
@@ -89,5 +99,5 @@ Edit object: `{id, project_id, status: "segmenting"|"mask_ready"|"tracking"|"tra
 - **M7** (B, Kaggle): `edit` stage script: reference frame × seeds → candidates; other frames conditioned on the chosen
   candidate; crop → latent blending → hard composite; test that every pixel outside the dilated mask is unchanged;
   per-frame seconds and peak VRAM. Model/precision per the decision on [W2_DIFFUSION_RESEARCH.md](W2_DIFFUSION_RESEARCH.md).
-- **M8** (B, backend): `Edit` table, the endpoints above, task types `segment / track / edit_preview / edit_frames /
+- **M8** (B, backend): `Edit` table, the endpoints above, task types `segment / track / edit_preview / edit_apply /
   rebuild`, artifact upload of masks/candidates/edited frames/rebuilt splat, scene versions, the original kept read-only.

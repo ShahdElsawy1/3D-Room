@@ -27,9 +27,11 @@ def new_id() -> str:
 
 class TaskType(str, enum.Enum):
     reconstruct = "reconstruct"     # week 1: video -> frames -> poses -> 3DGS -> splat
-    edit_preview = "edit_preview"   # week 2: reference frame, several seeds
-    edit_apply = "edit_apply"       # week 2: all other frames, conditioned on the accepted reference
-    rebuild = "rebuild"             # week 2: 3DGS from edited frames, same poses
+    segment = "segment"             # week 2 (Person A's stage): clicks on a frame -> mask(s)
+    track = "track"                 # week 2 (Person A's stage): reference mask -> mask per frame
+    edit_preview = "edit_preview"   # week 2 (Person B): reference frame, several seeds
+    edit_apply = "edit_apply"       # week 2 (Person B): all other frames, conditioned on the accepted reference
+    rebuild = "rebuild"             # week 2 (Person C/A's stage): 3DGS from edited frames, same poses
 
 
 class TaskStatus(str, enum.Enum):
@@ -90,6 +92,23 @@ class Task(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="tasks")
+
+
+class Edit(Base):
+    """One object edit of a project (Week 2). Its files live in <project>/edits/<id>/ and its artifacts have
+    version = id. The status shown to the user is derived from the edit's tasks (app/edits.py)."""
+    __tablename__ = "edits"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    ref_frame: Mapped[str] = mapped_column(String(200))
+    clicks: Mapped[list] = mapped_column(JSON, default=list)          # [{x, y, positive}] on ref_frame, pixels
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chosen_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    removed_frames: Mapped[list] = mapped_column(JSON, default=list)  # user unticked these in the mask grid
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    project: Mapped[Project] = relationship()
 
 
 class Artifact(Base):

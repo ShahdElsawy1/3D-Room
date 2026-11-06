@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import Settings
 from .db import Base, make_engine, make_sessionmaker
 from .maintenance import cleanup_stale_uploads
-from .routers import auth, projects, scene, tasks, uploads, worker
+from .routers import auth, edits, projects, scene, tasks, uploads, worker
 
 API_VERSION = "0.1.0"
 
@@ -39,6 +39,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(worker.router)
     app.include_router(uploads.router)
     app.include_router(scene.router)
+    app.include_router(edits.router)
 
     @app.get("/health", tags=["meta"])
     def health():

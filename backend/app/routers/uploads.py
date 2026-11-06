@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..artifacts import KINDS, ArtifactError, extract_archive, parts_dir, staging_dir, validate
+from ..artifacts import EDIT_KINDS, KINDS, ArtifactError, extract_archive, kind_spec, parts_dir, staging_dir, validate
 from ..config import Settings
 from ..deps import get_db, get_settings, require_worker
 from ..models import Task, TaskStatus, UploadChunk, UploadSession, utcnow
@@ -67,9 +67,16 @@ def _out(db: Session, s: UploadSession) -> UploadOut:
 def create_upload(task_id: str, body: UploadCreate, db: Session = Depends(get_db),
                   settings: Settings = Depends(get_settings)):
     task = _leased_task(db, task_id, body.worker_id, settings)
-    if body.kind not in KINDS:
+    # The version comes from the task: an edit's results can never overwrite the original reconstruction.
+    version = (task.params or {}).get("edit_id") or "original"
+    if body.version is not None and body.version != version:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
-                            f"Unknown artifact kind '{body.kind}'. Allowed: {', '.join(KINDS)}")
+                            f"this task writes version '{version}', not '{body.version}'")
+    k = kind_spec(body.kind, version)
+    if k is None:
+        allowed = KINDS if version == "original" else EDIT_KINDS
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            f"Unknown artifact kind '{body.kind}'. Allowed: {', '.join(allowed)}")
     if body.size_bytes > settings.upload_max_artifact_mb * 2**20:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Artifact larger than BACKEND_UPLOAD_MAX_ARTIFACT_MB")
 
@@ -93,8 +100,7 @@ def create_upload(task_id: str, body: UploadCreate, db: Session = Depends(get_db
     if not settings.upload_min_chunk_bytes <= chunk <= settings.upload_max_chunk_bytes:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
                             f"chunk_size must be {settings.upload_min_chunk_bytes}-{settings.upload_max_chunk_bytes} bytes")
-    k = KINDS[body.kind]
-    s = UploadSession(project_id=task.project_id, task_id=task.id, kind=body.kind, version=body.version,
+    s = UploadSession(project_id=task.project_id, task_id=task.id, kind=body.kind, version=version,
                       path=k.path, is_archive=k.is_dir, size_bytes=body.size_bytes, sha256=body.sha256,
                       chunk_size=chunk, total_chunks=math.ceil(body.size_bytes / chunk))
     db.add(s)
@@ -188,7 +194,7 @@ def complete_upload(upload_id: str, body: WorkerIn, db: Session = Depends(get_db
             (tmp / s.path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(part, tmp / s.path)
             info = {}
-        info.update(validate(s.kind, tmp))
+        info.update(validate(s.kind, tmp, s.path))
     except (ArtifactError, tarfile.TarError, OSError, EOFError) as e:
         shutil.rmtree(tmp, ignore_errors=True)
         db.execute(delete(UploadChunk).where(UploadChunk.upload_id == s.id))

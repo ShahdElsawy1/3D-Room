@@ -242,13 +242,15 @@ def cmd_frames(a, p: Paths, editor: Editor, prog: Progress) -> dict:
 
     # the reference frame's edit is the chosen candidate itself
     save_png(np.asarray(Image.open(p.edit / chosen["file"]).convert("RGB")), p.edited / (Path(ref).stem + ".png"))
-    order = edit_order(present_frames(idx), ref)
+    excluded = set(filter(None, a.exclude.split(","))) - {ref}   # the user removed these in the mask grid
+    present = [n for n in present_frames(idx) if n not in excluded]
+    order = edit_order(present, ref)
     if a.only:
         wanted = set(a.only.split(","))
         order = [o for o in order if o[0] in wanted]
     skipped = []
     if a.keyframe_every > 1:  # spec idea: edit keyframes only; the rest must be dropped from the rebuild
-        keep = set(present_frames(idx)[::a.keyframe_every]) | {ref}
+        keep = set(present[::a.keyframe_every]) | {ref}
         skipped = [n for n, _ in order if n not in keep]
         order = [o for o in order if o[0] in keep]
 
@@ -271,7 +273,7 @@ def cmd_frames(a, p: Paths, editor: Editor, prog: Progress) -> dict:
     edited = [ref] + [f["name"] for f in frames]
     out = {"ref_frame": ref, "chosen_seed": a.chosen_seed, "seed": seed, "with_previous": a.with_previous,
            "edited": [{"frame": nm, "file": f"edited/{Path(nm).stem}.png"} for nm in edited],
-           "skipped_present_frames": skipped}
+           "skipped_present_frames": skipped, "excluded_by_user": sorted(excluded & set(present_frames(idx)))}
     (p.edited / "index.json").write_text(json.dumps(out, indent=2))
     update_report(p, "frames", {**common_info(a, editor), **{k: out[k] for k in ("ref_frame", "chosen_seed", "seed",
                   "with_previous", "skipped_present_frames")}, "frames": frames, "summary": summary(frames)})
@@ -305,6 +307,7 @@ def parse(argv=None):
     ap.add_argument("--with-previous", action="store_true", help="also condition on the previous edited frame")
     ap.add_argument("--keyframe-every", type=int, default=1)
     ap.add_argument("--only", default="", help="comma-separated frame names to (re)edit")
+    ap.add_argument("--exclude", default="", help="comma-separated frame names the user removed (not edited)")
     ap.add_argument("--backend-url", default="")
     ap.add_argument("--task-id", default="")
     a = ap.parse_args(argv)

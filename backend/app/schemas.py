@@ -151,6 +151,12 @@ class ClaimOut(BaseModel):
     video_sha256: str | None
     video_size_bytes: int | None
     pipeline_args: list[str]       # extra flags for run_pipeline.py
+    # week 2 tasks (empty for "reconstruct"): what to download, which stage to run, what to upload
+    edit_id: str | None = None
+    stage: str | None = None       # w2_segment | w2_track | run_edit | w2_rebuild
+    stage_args: list[str] = []
+    inputs: list[dict] = []        # [{kind, version, path, is_dir, required}] -> GET /worker/projects/{pid}/artifacts/{kind}
+    outputs: list[dict] = []       # [{kind, version, path, is_dir, required}] -> chunked upload
 
 
 class WorkerIn(BaseModel):
@@ -183,7 +189,8 @@ class UploadCreate(WorkerIn):
     size_bytes: int = Field(gt=0)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     chunk_size: int | None = Field(default=None, description="bytes per chunk; default BACKEND_UPLOAD_CHUNK_MB")
-    version: Literal["original"] = "original"
+    version: str | None = Field(default=None, max_length=64,
+                                description="optional check; the backend takes the version from the task")
 
 
 class UploadOut(BaseModel):
@@ -226,3 +233,111 @@ class SceneOut(BaseModel):
     meta: dict
     up_vector: list[float]
     urls_expire_at: datetime
+
+
+# ---------------------------------------------------------------- week 2: object edits (frontend)
+class Click(BaseModel):
+    x: int = Field(ge=0, description="pixel column in the frame (frames are the Week 1 size, e.g. 960x540)")
+    y: int = Field(ge=0, description="pixel row")
+    positive: bool = Field(default=True, description="false = 'not this' click to refine the mask")
+
+
+class EditCreate(BaseModel):
+    ref_frame: str = Field(min_length=1, max_length=200, description="frame name from GET /projects/{id}/frames")
+    clicks: list[Click] = Field(min_length=1, max_length=30)
+
+
+class ClicksIn(BaseModel):
+    clicks: list[Click] = Field(min_length=1, max_length=30)
+
+
+class AddFrame(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    clicks: list[Click] = Field(default_factory=list, max_length=30,
+                                description="optional hint; empty = let the segmentation stage find the object")
+
+
+class FramesPatch(BaseModel):
+    remove: list[str] = Field(default_factory=list, description="frames where the mask is wrong: not edited")
+    restore: list[str] = Field(default_factory=list, description="undo an earlier remove")
+    add: list[AddFrame] = Field(default_factory=list, description="fallback: frames the tracker missed")
+
+
+class PreviewIn(BaseModel):
+    prompt: str = Field(min_length=1, max_length=1000)
+    seeds: list[int] | None = Field(default=None, max_length=8, description="explicit seeds; default num_seeds random")
+    num_seeds: int = Field(default=3, ge=1, le=8)
+    model: Literal["klein", "qwen-turbo", "qwen"] | None = Field(default=None, description="default: server setting")
+    precision: Literal["bf16", "bf16-fp32", "fp8-bf16", "fp16"] | None = None
+
+
+class AcceptIn(BaseModel):
+    seed: int = Field(description="one of the candidates' seeds")
+    with_previous: bool = Field(default=False, description="also condition on the previous edited frame")
+
+
+class RebuildIn(BaseModel):
+    mode: Literal["finetune", "scratch"] = Field(
+        default="finetune", description="fine-tune the existing splat (faster) or re-train from scratch")
+
+
+class TaskBrief(_Out):
+    id: str
+    type: str
+    status: str
+    stage: str | None
+    progress: float
+    error: str | None
+    created_at: datetime
+
+
+class EditOut(_Out):
+    id: str
+    project_id: str
+    status: str = Field(description="created | segmenting | mask_ready | tracking | tracked | previewing | "
+                                    "preview_ready | editing | edited | rebuilding | done | <type>_failed | <type>_cancelled")
+    ref_frame: str
+    clicks: list[dict]
+    prompt: str | None
+    chosen_seed: int | None
+    removed_frames: list[str]
+    current_task: TaskBrief | None = None
+    tasks: list[TaskBrief] = []
+    ref_mask_url: str | None = None
+    scene_version: str | None = Field(default=None, description="pass as ?version= to GET /scene once rebuilt")
+    created_at: datetime
+    updated_at: datetime
+
+
+class FrameOut(BaseModel):
+    name: str
+    index: int
+    url: str
+    width: int | None = None
+    height: int | None = None
+    camera_id: int | None = None
+
+
+class EditFrameOut(BaseModel):
+    name: str
+    url: str
+    mask_url: str | None
+    present: bool = Field(description="the object is in this frame (tracker) and the user did not remove it")
+    tracked_present: bool
+    removed: bool
+    source: str | None = None
+    score: float | None = None
+
+
+class CandidateOut(BaseModel):
+    seed: int
+    url: str
+    crop_url: str | None = None
+    seconds: float | None = None
+
+
+class SceneVersion(_Out):
+    version: str
+    edit_id: str | None
+    prompt: str | None
+    created_at: datetime | None

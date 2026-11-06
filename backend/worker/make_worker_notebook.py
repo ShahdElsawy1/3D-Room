@@ -75,6 +75,12 @@ import requests
 r = requests.get(BACKEND_URL + "/worker/ping", headers={"Authorization": "Bearer " + os.environ["W1_WORKER_TOKEN"]}, timeout=20)
 print(r.status_code, r.text)     # expect: 200 {"ok":true,...}   401 = wrong token   other/timeout = tunnel down
 """),
+code("""
+# 5b. Week 2 only (object editing). Skip for a Week 1-only run.
+#     FLUX 3 Klein is gated: accept its license on huggingface.co, then add Secret HF_TOKEN (a read token).
+!pip install -q -r /kaggle/working/repo/backend/editing/requirements-kaggle.txt
+os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+"""),
 md("""
 ## 6. Run the worker
 Runs until stopped (Interrupt), or until `--max-idle-minutes` without tasks (saves GPU quota). Each task: claim ->
@@ -83,6 +89,11 @@ one heartbeat. If this session dies, the backend re-queues the task after 5 minu
 
 Optional flags: `--upload-ply` (also the ~250 MB `scene.ply`), `--upload-checkpoint` (gsplat checkpoints for the
 Week 2 fine-tune). The viewer only needs the splat, which is uploaded first.
+
+Week 2 tasks (segment, track, edit preview/apply, rebuild) are claimed by the same worker. `segment`, `track` and
+`rebuild` need Person A's / C's `ML_Work/stages/w2_*.py`; without them those tasks fail with a clear message.
+One worker per GPU (spec: GPU 0 diffusion, GPU 1 SAM + 3DGS): run two cells in parallel with
+`CUDA_VISIBLE_DEVICES=0 ... --types edit_preview,edit_apply` and `CUDA_VISIBLE_DEVICES=1 ... --types reconstruct,segment,track,rebuild`.
 """),
 code("""
 !python $WORKER --backend-url $BACKEND_URL --ml-dir $ML_DIR --root /kaggle/working/workspace --max-idle-minutes 30

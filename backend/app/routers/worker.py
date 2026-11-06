@@ -5,16 +5,24 @@ GET  /worker/ping                        token check at worker start-up
 POST /worker/claim                       -> 200 {task, video_url, pipeline_args, ...} | 204 nothing to do
 POST /worker/tasks/{id}/heartbeat        renew the lease; reply says whether the user cancelled
 GET  /worker/tasks/{id}/video            download the project's input video
+GET  /worker/projects/{pid}/artifacts/{kind}?version=   one stored artifact (folders as a .tar), week 2 inputs
 POST /worker/tasks/{id}/complete         results stored -> done
 POST /worker/tasks/{id}/fail             error -> retry (pending) or failed
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+import tarfile
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from ..artifacts import ArtifactError, missing_required, promote
+from ..edits import STAGE, inputs_for, is_edit_task, outputs_for, stage_args
+from ..models import Artifact
 from ..config import Settings
 from ..deps import get_db, get_settings, require_worker
 from ..maintenance import maybe_cleanup
@@ -55,7 +63,11 @@ def claim(body: ClaimIn, request: Request, db: Session = Depends(get_db),
     if t is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     video = next((a for a in t.project.artifacts if a.kind == "video"), None)
-    return ClaimOut(task=task_out(db, t), lease_seconds=settings.lease_seconds,
+    w2 = {}
+    if is_edit_task(t.type):
+        w2 = dict(edit_id=t.params["edit_id"], stage=STAGE[t.type], stage_args=stage_args(t),
+                  inputs=inputs_for(t), outputs=outputs_for(t))
+    return ClaimOut(task=task_out(db, t), lease_seconds=settings.lease_seconds, **w2,
                     video_url=f"/worker/tasks/{t.id}/video" if t.project.video_path else None,
                     video_filename=t.project.video_path.split("/")[-1] if t.project.video_path else None,
                     video_sha256=video.sha256 if video else None,
@@ -87,6 +99,27 @@ def task_video(task_id: str, db: Session = Depends(get_db), settings: Settings =
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Video file missing from storage")
     return FileResponse(path, filename=path.name)
+
+
+@router.get("/projects/{project_id}/artifacts/{kind}")
+def artifact_download(project_id: str, kind: str, version: str = Query("original", max_length=64),
+                      db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    """A whole stored artifact for a week 2 stage: a file as is, a folder as an uncompressed .tar whose entries
+    are named by their path in the project (e.g. frames/images/000001.jpg), to be extracted into the project."""
+    a = db.scalar(select(Artifact).where(Artifact.project_id == project_id, Artifact.kind == kind,
+                                         Artifact.version == version))
+    if a is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No {kind} artifact (version {version})")
+    path = resolve_in_project(settings, project_id, a.path)
+    if not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Artifact missing from storage")
+    if path.is_file():
+        return FileResponse(path, filename=path.name)
+    out = settings.tmp_dir / f"{uuid.uuid4().hex}.tar"
+    with tarfile.open(out, "w") as tf:
+        tf.add(path, arcname=a.path)
+    return FileResponse(out, filename=f"{kind}.tar", media_type="application/x-tar",
+                        background=BackgroundTask(out.unlink, missing_ok=True))
 
 
 @router.post("/tasks/{task_id}/complete")
