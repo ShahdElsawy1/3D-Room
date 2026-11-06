@@ -369,3 +369,41 @@ def test_reupload_after_different_content_is_not_skipped(client, auth, worker, s
     upload(client, worker, tid, "splat", a)                     # same as staged now -> skipped, still a
     assert complete_task(client, worker, tid).status_code == 200
     assert (settings.workspace_dir / pid / "export" / "scene.splat").read_bytes() == a
+
+
+def test_cleanup_abandoned_uploads(client, auth, worker, settings, running_task):
+    import time as _time
+    from app.artifacts import parts_dir, staging_dir
+    from app.maintenance import cleanup_stale_uploads
+    from app.models import UploadSession
+    pid, tid = running_task
+    stale = new_upload(client, worker, tid, "splat", b"\1" * 320)        # will be abandoned
+    fresh = new_upload(client, worker, tid, "cameras", b"[]" * 10)       # still active
+    db = client.app.state.SessionLocal()
+    db.get(UploadSession, stale["upload_id"]).updated_at = utcnow() - timedelta(hours=settings.upload_stale_hours + 1)
+    db.commit()
+    orphan = parts_dir(settings) / "deadbeef.part"
+    orphan.write_bytes(b"x")
+    os.utime(orphan, (_time.time() - 7200, _time.time() - 7200))
+    young_orphan = parts_dir(settings) / "young.part"
+    young_orphan.write_bytes(b"x")
+
+    stats = cleanup_stale_uploads(db, settings)
+    assert stats["sessions"] == 1 and stats["part_files"] == 1
+    assert not (parts_dir(settings) / f"{stale['upload_id']}.part").exists()
+    assert (parts_dir(settings) / f"{fresh['upload_id']}.part").exists()          # active upload untouched
+    assert young_orphan.exists() and not orphan.exists()
+    assert db.get(UploadSession, stale["upload_id"]) is None
+    db.close()
+
+    # a task that fails leaves staged files and open uploads behind -> removed
+    upload(client, worker, tid, "splat", b"\1" * 320)
+    assert staging_dir(settings, tid).exists()
+    client.post(f"/worker/tasks/{tid}/fail", headers=worker,
+                json={"worker_id": WORKER_ID, "error": "x", "retryable": False})
+    db = client.app.state.SessionLocal()
+    stats = cleanup_stale_uploads(db, settings)
+    db.close()
+    assert stats["staging_dirs"] == 1 and stats["sessions"] == 1
+    assert not staging_dir(settings, tid).exists()
+    assert not (parts_dir(settings) / f"{fresh['upload_id']}.part").exists()

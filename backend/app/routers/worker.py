@@ -10,13 +10,14 @@ POST /worker/tasks/{id}/fail             error -> retry (pending) or failed
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ..artifacts import ArtifactError, missing_required, promote
 from ..config import Settings
 from ..deps import get_db, get_settings, require_worker
+from ..maintenance import maybe_cleanup
 from ..models import Task, TaskStatus, utcnow
 from ..schemas import ClaimIn, ClaimOut, CompleteIn, FailIn, HeartbeatIn, HeartbeatOut
 from ..storage import resolve_in_project
@@ -47,7 +48,9 @@ def ping(settings: Settings = Depends(get_settings)):
 
 
 @router.post("/claim", response_model=ClaimOut, responses={204: {"description": "no pending task"}})
-def claim(body: ClaimIn, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def claim(body: ClaimIn, request: Request, db: Session = Depends(get_db),
+          settings: Settings = Depends(get_settings)):
+    maybe_cleanup(request.app.state, db, settings)
     t = claim_next(db, body.worker_id, body.types, settings.lease_seconds)
     if t is None:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -110,7 +113,11 @@ def complete(task_id: str, body: CompleteIn, db: Session = Depends(get_db),
 @router.post("/tasks/{task_id}/fail")
 def fail(task_id: str, body: FailIn, db: Session = Depends(get_db)):
     t = _task_for_worker(db, task_id, body.worker_id)
-    t.error = body.error[:20000]
+    # keep the precise error the failing stage reported via /progress (e.g. "CUDA out of memory") as the
+    # headline, followed by the worker's details (log tail)
+    stage_error = t.error
+    t.error = (f"{stage_error}\n\n{body.error}" if stage_error and stage_error not in body.error
+               else body.error)[:20000]
     t.worker_id, t.lease_expires_at = None, None
     if body.retryable and t.attempts < t.max_attempts:
         t.status, t.stage, t.progress = TaskStatus.pending.value, "queued (retry)", 0.0

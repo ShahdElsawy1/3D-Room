@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from ..artifacts import KINDS, ArtifactError, extract_archive, parts_dir, staging_dir, validate
 from ..config import Settings
 from ..deps import get_db, get_settings, require_worker
-from ..models import Task, TaskStatus, UploadChunk, UploadSession
+from ..models import Task, TaskStatus, UploadChunk, UploadSession, utcnow
 from ..schemas import ChunkAck, UploadCreate, UploadOut, WorkerIn
 from ..storage import project_dir, sha256_file
 from ..tasks import lease_until
@@ -143,6 +143,7 @@ async def put_chunk(upload_id: str, index: int, request: Request, x_worker_id: s
         f.seek(index * s.chunk_size)
         f.write(buf)
 
+    s.updated_at = utcnow()                           # activity: not abandoned
     row = db.get(UploadChunk, (s.id, index))
     duplicate = row is not None
     if row is None:

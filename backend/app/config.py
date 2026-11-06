@@ -46,6 +46,8 @@ class Settings:
     upload_max_chunk_bytes: int = 90 * 1024 * 1024
     upload_min_chunk_bytes: int = 1024
     upload_max_artifact_mb: int = field(default_factory=lambda: int(_env("UPLOAD_MAX_ARTIFACT_MB", "20480")))
+    # open uploads with no new chunk for this long are deleted (abandoned by a dead Kaggle session)
+    upload_stale_hours: float = field(default_factory=lambda: float(_env("UPLOAD_STALE_HOURS", "24")))
     # lifetime of the signed file URLs returned by GET /projects/{id}/scene (viewers can't send auth headers)
     file_url_ttl_minutes: int = field(default_factory=lambda: int(_env("FILE_URL_TTL_MINUTES", "360")))
 

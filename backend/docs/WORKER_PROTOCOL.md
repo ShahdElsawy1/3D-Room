@@ -123,4 +123,14 @@ Their targets must already be uploaded, so the **upload order is `frames`, `pose
 - M3 with the team's **real Kaggle output** (`demo_export.zip`) against a live server: 8 artifacts uploaded with
   32 MB chunks. The 249 MB `scene.ply` was interrupted after 3/8 chunks and resumed with only the 5 missing.
   Stored files are byte-identical to the originals. Interrupted download resumed with `curl -C -`, and the sha matches.
-- Not yet: the worker loop itself, and a run on Kaggle through the tunnel (M4).
+- M4: the real worker (`worker/kaggle_worker.py`) against a live server with `tests/stub_pipeline.py`. That stub runs
+  Person A's real stage 1 (ffmpeg), stage 3 (choose → `scene/`), stage 5 (export) and make_reports, and fakes only the GPU
+  steps. 8 end-to-end tests: success (A's layout on the backend, metrics in `result`, ply skipped by default), optional
+  ply/checkpoint (splat uploaded before ply), failure → retry → failed (stage error kept as the headline),
+  user cancel (pipeline **and its grandchild** killed), lease lost mid-run, bad token, idle exit, resumable video download.
+- Not yet: GPU run on Kaggle through a Cloudflare tunnel. Steps and expected results: [KAGGLE_RUNBOOK.md](KAGGLE_RUNBOOK.md).
+
+## Stale uploads
+Unfinished uploads are removed when their task has ended or after `BACKEND_UPLOAD_STALE_HOURS` (24 h) without a chunk,
+together with their `.part` file. So are orphaned `.part` files and the staging folders of failed or cancelled tasks.
+Cleanup runs at server start and at most every 10 minutes when a worker polls.

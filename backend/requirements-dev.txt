@@ -1,0 +1,4 @@
+# Backend tests, including the worker tests that run Person A's real CPU stages (tests/stub_pipeline.py).
+-r requirements.txt
+-r ../ML_Work/requirements.txt
+requests>=2.31
