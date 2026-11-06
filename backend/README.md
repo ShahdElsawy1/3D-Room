@@ -1,0 +1,115 @@
+# 3D-Room backend (Person B)
+
+FastAPI + SQLite. Users, projects, video uploads, reconstruction/edit tasks, a pull-based Kaggle worker API,
+artifact storage and scene retrieval. The API reference for the frontend is in [docs/API.md](docs/API.md);
+interactive docs are at `/docs` while the server runs.
+
+```
+Browser (Person C) ──HTTPS──┐
+                            ▼
+        Cloudflare Tunnel (https://<name>.trycloudflare.com)
+                            ▼
+        FastAPI on your machine  (localhost:8000) ── SQLite + backend/data/workspace/<project_id>/
+                            ▲
+Kaggle notebook worker ─────┘  polls for pending tasks, runs ML_Work/run_pipeline.py,
+                               POSTs real progress, uploads artifacts back      (milestones M2–M4)
+```
+
+The Kaggle notebook never needs to be reachable. It only makes outgoing HTTPS requests to the tunnel URL,
+so a dropped Kaggle session can't break the API. The spec warns about this in §4.3.
+
+## Status
+
+| Milestone | Content | State |
+|---|---|---|
+| M1 | auth (JWT), projects, video upload + validation, storage layout, data model | done, tested |
+| M2 | reconstruction tasks, status, progress, worker claim/lease/retry API | next |
+| M3 | chunked artifact upload, scene endpoint, file serving | planned |
+| M4 | Kaggle worker script + notebook cell | planned |
+| M6–M9 | Week 2: diffusion editing, edit tasks, rebuild, before/after | planned |
+
+## 1. Run locally
+
+Requires Python ≥ 3.10 and `ffmpeg`/`ffprobe` on PATH (Windows: `winget install Gyan.FFmpeg`).
+
+```bash
+cd backend
+python -m venv .venv
+.venv/Scripts/activate            # Windows (Git Bash: source .venv/Scripts/activate); Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
+python -m pytest tests -q         # 12 passed
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+Open http://localhost:8000/docs. Use **Authorize** with your email and password after signing up.
+
+## 2. Configuration (environment variables)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BACKEND_DATA_DIR` | `backend/data` | DB, uploads, all project artifacts |
+| `BACKEND_DATABASE_URL` | `sqlite:///<data>/app.db` | any SQLAlchemy URL (Postgres works too) |
+| `BACKEND_JWT_SECRET` | random, persisted in `<data>/.jwt_secret` | token signing key (≥ 32 chars if you set it) |
+| `BACKEND_JWT_EXPIRE_MINUTES` | `10080` (7 days) | token lifetime |
+| `BACKEND_MAX_UPLOAD_MB` | `2048` | video size limit |
+| `BACKEND_VIDEO_MIN_SECONDS` / `_MAX_SECONDS` | `5` / `600` | hard limits. 2–5 min (spec §2) only produces a warning, because short debug clips are normal |
+| `BACKEND_FFPROBE` | `ffprobe` | path to ffprobe |
+| `BACKEND_CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173,...` | comma-separated frontend origins |
+
+## 3. Storage layout
+
+Each project's folder uses the same layout as Person A's pipeline (`ML_Work/common/config.py`), so the worker
+runs `run_pipeline.py --root <data>/workspace --project <project_id>` and Week 2 reads the same paths:
+
+```
+backend/data/
+  app.db                         users, projects, tasks, artifacts
+  workspace/<project_id>/
+    video/input.<ext>            the uploaded original (replaced only by a new upload)
+    frames/ poses/ scene/ gs/ export/ metrics/ manifest.json      written back by the worker (M3/M4)
+```
+`backend/data/` is git-ignored. Back it up if the demo data matters.
+
+## 4. Expose the backend with Cloudflare Tunnel
+
+The Kaggle worker (and teammates' browsers) need a public HTTPS URL for your local server. Nothing is
+port-forwarded: `cloudflared` makes an outgoing connection to Cloudflare.
+
+### 4a. Quick tunnel (no account, URL changes on every start). Use this for development and the demo.
+
+```powershell
+winget install --id Cloudflare.cloudflared         # once; or download cloudflared.exe from Cloudflare's GitHub releases
+uvicorn app.main:app --host 127.0.0.1 --port 8000  # terminal 1
+cloudflared tunnel --url http://localhost:8000     # terminal 2
+```
+`cloudflared` prints a line like `https://random-words.trycloudflare.com`. That is the backend URL:
+- test it: `curl https://random-words.trycloudflare.com/health`
+- give it to the Kaggle worker (`BACKEND_URL`, M4) and to Person C's frontend (`VITE_API_URL` or similar)
+- add the frontend's own origin to `BACKEND_CORS_ORIGINS` if it is served from somewhere other than localhost
+
+The URL dies when `cloudflared` stops. Restarting gives a new URL, which you then update in the notebook.
+
+### 4b. Named tunnel (stable URL). Needs a free Cloudflare account and a domain on Cloudflare.
+
+```powershell
+cloudflared tunnel login                                   # opens the browser, pick your domain
+cloudflared tunnel create room3d                           # creates credentials in %USERPROFILE%\.cloudflared
+cloudflared tunnel route dns room3d api.<your-domain>      # DNS record pointing at the tunnel
+```
+`%USERPROFILE%\.cloudflared\config.yml`:
+```yaml
+tunnel: room3d
+credentials-file: C:\Users\<you>\.cloudflared\<tunnel-id>.json
+ingress:
+  - hostname: api.<your-domain>
+    service: http://localhost:8000
+  - service: http_status:404
+```
+Then `cloudflared tunnel run room3d`. The URL `https://api.<your-domain>` stays the same across restarts.
+
+### Limits that shape the design
+- **Request body ≤ 100 MB** through Cloudflare. Video uploads from the browser stay below the configured limit.
+  Large artifacts from Kaggle (`scene.ply`, checkpoints, ~250 MB+) go up in chunks (M3).
+- Quick tunnels have no uptime guarantee. That is fine here, because the worker retries and progress posts never kill
+  a stage (`ML_Work/common/progress.py`).
+- The tunnel makes the API public. User routes require a JWT, and worker routes will require a separate
+  `BACKEND_WORKER_TOKEN` (M2).
