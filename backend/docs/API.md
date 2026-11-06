@@ -18,8 +18,8 @@ Base URL: the Cloudflare tunnel URL, or `http://localhost:8000` locally. Live, a
 |---|---|
 | Sign up / log in | `POST /auth/signup`, `POST /auth/login`; keep `access_token` (e.g. localStorage) |
 | Projects list | `GET /projects`, `POST /projects` |
-| Upload + submit | `POST /projects/{id}/video`, then `POST /projects/{id}/reconstruct` *(M2)* |
-| Progress | poll `GET /tasks/{task_id}` every 2 s *(M2)* |
+| Upload + submit | `POST /projects/{id}/video`, then `POST /projects/{id}/reconstruct` |
+| Progress | poll `GET /tasks/{task_id}` every 2–3 s until `status` is `done`, `failed` or `cancelled`; optional `POST /tasks/{id}/cancel` |
 | Viewer | `GET /projects/{id}/scene` *(M3)* |
 
 ---
@@ -104,8 +104,81 @@ The stored video, with HTTP Range support. Because it needs the auth header, fet
 
 ---
 
+## Tasks (reconstruction and progress)
+
+### `POST /projects/{id}/reconstruct` → 202
+Submits the "3D reconstruction" task. The body is optional. `{}` or no body uses the pipeline's defaults.
+```json
+{"method": "vggt", "train_mode": "quick", "fps": "auto", "long_side": 960}
+```
+| Field | Values | Meaning |
+|---|---|---|
+| `method` | `vggt` \| `glomap` \| `both` | camera pose method (`both` = run the VGGT-vs-GLOMAP comparison too, slower) |
+| `train_mode` | `quick` \| `full` | ~7k iterations (minutes) or ~30k (better quality, ~45 min on a T4) |
+| `fps` | `auto` \| `"1"`…`"4"` | frame sampling |
+| `long_side` | 640–960 | frame size in pixels |
+
+The UI can simply send `{}`. A "high quality" checkbox could map to `train_mode: "full"`.
+Errors: `409` no video uploaded yet, or the project already has a pending/running task. `422` invalid option.
+Response: a Task object (below), `status: "pending"`.
+
+### Task object (`GET /tasks/{id}` → 200)
+```json
+{
+  "id": "68fbe00a36d24d1cb5ad34616ae5b56f",
+  "project_id": "8f311bfe7f8744f5859ac9f1433ce517",
+  "type": "reconstruct",
+  "status": "running",
+  "stage": "estimating poses",
+  "progress": 30.0,
+  "error": null,
+  "params": {"train_mode": "quick"},
+  "result": null,
+  "attempts": 1,
+  "max_attempts": 2,
+  "queue_position": null,
+  "stages": [
+    {"name": "extracting frames", "start": 0,  "end": 15},
+    {"name": "estimating poses",  "start": 15, "end": 45},
+    {"name": "training",          "start": 45, "end": 90},
+    {"name": "exporting",         "start": 90, "end": 100}
+  ],
+  "created_at": "...Z", "started_at": "...Z", "finished_at": null, "updated_at": "...Z"
+}
+```
+
+**How to draw the progress page.** The progress is real: it comes from the pipeline stages, not from a timer (spec §4.4).
+- `progress` is overall 0–100. `stages` lists the segments, so the bar can show four labelled sections with the
+  current `stage` highlighted.
+- `status` / `stage` combinations to handle:
+
+| `status` | `stage` | Show |
+|---|---|---|
+| `pending` | `queued` | "Waiting for a GPU worker", plus `queue_position` (1 = next). Nothing moves until the Kaggle worker is running. |
+| `pending` | `queued (retry)` | "Retrying" plus `error` (why the previous attempt failed) |
+| `running` | one of the 4 stages | the bar |
+| `running` | `uploading results` | the bar at 99 %: results are being copied to the server |
+| `done` | `done` | 100 %, button "Open viewer" |
+| `failed` | last stage reached | `error` (failed after `max_attempts` tries). The user can submit again. |
+| `cancelled` | – | "Cancelled" |
+
+- While `running`, `error` may already contain a message for an attempt that is about to be retried. Show it
+  only when `status` is `failed` or the stage is `queued (retry)`.
+- Progress can go **down** when a task is retried (a new attempt starts from 0). Don't animate it as an error.
+
+### Other task routes
+| Method | Path | Success | Errors |
+|---|---|---|---|
+| `GET` | `/projects/{id}/tasks` | `200` all tasks of the project, newest first | `404` |
+| `POST` | `/tasks/{id}/cancel` | `200` task with `status: "cancelled"` | `404`, `409` already finished |
+
+`ProjectOut.latest_task_id` / `latest_task_status` let the projects list link straight to the progress page.
+
+*(`POST /tasks/{id}/progress` and `/worker/*` are for the Kaggle worker only and need the worker token. The frontend
+must not call them. See [WORKER_PROTOCOL.md](WORKER_PROTOCOL.md).)*
+
+---
+
 ## Coming next (shapes fixed when each milestone lands)
-- `POST /projects/{id}/reconstruct` → task; `GET /tasks/{id}` → `{status, stage, progress 0–100, error}`, with the stages
-  `extracting frames → estimating poses → training → exporting` *(M2)*
 - `GET /projects/{id}/scene` → splat URL, cameras, metadata *(M3)*
 - Week 2: edit sessions, masks, seed previews, accept/regenerate, frame-x-of-N progress, rebuild, `?version=` for before/after

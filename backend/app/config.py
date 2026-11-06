@@ -34,6 +34,13 @@ class Settings:
     video_recommended_seconds: tuple[float, float] = (120.0, 300.0)
     ffprobe_bin: str = field(default_factory=lambda: _env("FFPROBE", "ffprobe"))
 
+    # Pull-based worker (Kaggle). The token protects /worker/* and POST /tasks/{id}/progress.
+    worker_token: str = field(default_factory=lambda: _env("WORKER_TOKEN", ""))
+    # A running task whose worker sends nothing (progress or heartbeat) for this long is considered lost
+    # and goes back to the queue (or fails once max_attempts is used up).
+    lease_seconds: int = field(default_factory=lambda: int(_env("LEASE_SECONDS", "300")))
+    max_attempts: int = field(default_factory=lambda: int(_env("MAX_ATTEMPTS", "2")))
+
     cors_origins: list[str] = field(default_factory=lambda: [o.strip() for o in _env(
         "CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()])
 
@@ -43,12 +50,17 @@ class Settings:
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         if not self.database_url:
             self.database_url = f"sqlite:///{(self.data_dir / 'app.db').as_posix()}"
+        # random secrets persisted in the data dir, so tokens survive restarts without any setup
         if not self.jwt_secret:
-            # persist a random secret so tokens survive restarts without any setup
-            p = self.data_dir / ".jwt_secret"
-            if not p.exists():
-                p.write_text(secrets.token_urlsafe(48))
-            self.jwt_secret = p.read_text().strip()
+            self.jwt_secret = self._persisted_secret(".jwt_secret")
+        if not self.worker_token:
+            self.worker_token = self._persisted_secret(".worker_token")
+
+    def _persisted_secret(self, name: str) -> str:
+        p = self.data_dir / name
+        if not p.exists():
+            p.write_text(secrets.token_urlsafe(32))
+        return p.read_text().strip()
 
     @property
     def workspace_dir(self) -> Path:

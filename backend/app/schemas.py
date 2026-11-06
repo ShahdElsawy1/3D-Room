@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_serializer, field_validator
 
@@ -81,3 +82,96 @@ class ProjectOut(_Out):
 class VideoUploadOut(BaseModel):
     project_id: str
     video: VideoMeta
+
+
+# ---------------------------------------------------------------- tasks
+class ReconstructRequest(BaseModel):
+    """All optional. Omitted fields use ML_Work/run_pipeline.py defaults (Person A's choices)."""
+    method: Literal["vggt", "glomap", "both"] | None = Field(
+        default=None, description="pose estimation; 'both' runs the VGGT-vs-GLOMAP comparison")
+    train_mode: Literal["quick", "full"] | None = Field(default=None, description="quick ~7k iters, full ~30k")
+    fps: Literal["auto", "1", "2", "3", "4"] | None = Field(default=None, description="frame sampling (spec: 1-4 fps)")
+    long_side: int | None = Field(default=None, ge=640, le=960, description="frame long side in px (spec: 640-960)")
+    trainer: Literal["gsplat", "inria"] | None = None
+    max_frames: int | None = Field(default=None, ge=20, le=1000)
+
+
+class StageInfo(BaseModel):
+    name: str
+    start: float
+    end: float
+
+
+class TaskOut(_Out):
+    id: str
+    project_id: str
+    type: str
+    status: str
+    stage: str | None
+    progress: float
+    error: str | None
+    params: dict
+    result: dict | None
+    attempts: int
+    max_attempts: int
+    queue_position: int | None = None
+    stages: list[StageInfo] = []
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    updated_at: datetime
+
+
+# ---------------------------------------------------------------- worker protocol
+class ProgressIn(BaseModel):
+    """Exactly what ML_Work/common/progress.py posts."""
+    model_config = ConfigDict(extra="ignore")
+    status: Literal["running", "done", "failed"] = "running"
+    stage: str = Field(max_length=64)
+    progress: float = Field(ge=0, le=100)
+    error: str | None = None
+    t: float | None = None
+
+
+class ProgressAck(BaseModel):
+    ok: bool = True
+    cancel: bool = False
+
+
+class ClaimIn(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=100)
+    types: list[str] | None = Field(default=None, description="task types this worker can run; default all")
+
+
+class ClaimOut(BaseModel):
+    task: TaskOut
+    lease_seconds: int
+    video_url: str | None          # relative to the backend URL; needs the worker token
+    video_filename: str | None
+    video_sha256: str | None
+    video_size_bytes: int | None
+    pipeline_args: list[str]       # extra flags for run_pipeline.py
+
+
+class WorkerIn(BaseModel):
+    worker_id: str = Field(min_length=1, max_length=100)
+
+
+class HeartbeatIn(WorkerIn):
+    stage: str | None = Field(default=None, max_length=64)
+    progress: float | None = Field(default=None, ge=0, le=100)
+
+
+class HeartbeatOut(_Out):
+    status: str
+    cancel: bool
+    lease_expires_at: datetime | None
+
+
+class CompleteIn(WorkerIn):
+    result: dict = Field(default_factory=dict)
+
+
+class FailIn(WorkerIn):
+    error: str = Field(max_length=20000)
+    retryable: bool = True
