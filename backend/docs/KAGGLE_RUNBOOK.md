@@ -109,3 +109,13 @@ A = f"--project-dir {P} --edit-id bench --prompt 'make the sofa dark green leath
 Option C (fp16) only after the team decides it: add `--precision fp16 --allow-fp16`. Qwen comparison: same
 commands with `--model qwen-turbo` (bf16 does not fit one T4, so try `--placement offload` and `--precision fp8-bf16`).
 Save `bench_t4.json` and `edit_report.json` (and a few `candidates/` + `edited/` PNGs) and send them to Person B.
+
+## 7. Report tables (M9)
+After the runs, on your machine (backend running):
+```powershell
+python tools/make_report.py --backend-url http://localhost:8000 --email <you> --password <pw> --project <project_id> `
+       --bench bench_t4.json --edit-report edit_report.json --out docs/MEASUREMENTS.md
+```
+It prints Week 1 runtime/VRAM per stage, tunnel upload MB/s, stored sizes, the diffusion table (model, dtype option,
+s/frame, peak VRAM per GPU, NaN check, outside-mask leak, colour drift), the T4 benchmark and rebuild times. Cells
+without a measurement say "not measured"; nothing is estimated.
