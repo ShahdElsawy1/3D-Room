@@ -35,3 +35,20 @@ def decode_access_token(token: str, secret: str) -> str | None:
     if payload.get("typ") != "access":
         return None
     return payload.get("sub")
+
+
+def create_file_token(project_id: str, secret: str, expire_minutes: int) -> tuple[str, datetime]:
+    """Read-only token for one project's files, put in URLs as ?t=... (splat viewers and <video>/<img> tags
+    cannot send an Authorization header)."""
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(minutes=expire_minutes)
+    return jwt.encode({"sub": project_id, "iat": now, "exp": exp, "typ": "file"}, secret, algorithm=ALGORITHM), exp
+
+
+def decode_file_token(token: str, secret: str) -> str | None:
+    """Returns the project id the token grants read access to, or None."""
+    try:
+        payload = jwt.decode(token, secret, algorithms=[ALGORITHM])
+    except jwt.PyJWTError:
+        return None
+    return payload.get("sub") if payload.get("typ") == "file" else None

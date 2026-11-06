@@ -107,3 +107,35 @@ class Artifact(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="artifacts")
+
+
+class UploadSession(Base):
+    """A resumable, chunked upload of one artifact (single file or a .tar of one folder) from the worker.
+    Chunks are written at their offset into <data>/uploads/<id>.part, so they may arrive in any order, be
+    retried or duplicated. The artifact is registered only after the whole file's sha256 matches."""
+    __tablename__ = "upload_sessions"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    version: Mapped[str] = mapped_column(String(64), default="original")
+    path: Mapped[str] = mapped_column(String(500))          # destination, relative to the project folder
+    is_archive: Mapped[bool] = mapped_column(default=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str] = mapped_column(String(64))
+    chunk_size: Mapped[int] = mapped_column(Integer)
+    total_chunks: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="open")   # open | complete
+    meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    chunks: Mapped[list["UploadChunk"]] = relationship(cascade="all, delete-orphan")
+
+
+class UploadChunk(Base):
+    __tablename__ = "upload_chunks"
+    upload_id: Mapped[str] = mapped_column(ForeignKey("upload_sessions.id", ondelete="CASCADE"), primary_key=True)
+    index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))

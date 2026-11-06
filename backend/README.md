@@ -24,8 +24,8 @@ so a dropped Kaggle session can't break the API. The spec warns about this in §
 |---|---|---|
 | M1 | auth (JWT), projects, video upload + validation, storage layout, data model | done, tested |
 | M2 | reconstruction tasks, status, real progress, worker claim/lease/retry/cancel API, worker token | done, tested |
-| M3 | chunked artifact upload, scene endpoint, file serving | next |
-| M4 | Kaggle worker script + notebook cell | planned |
+| M3 | resumable chunked artifact upload, validation, atomic promotion, scene endpoint, signed Range downloads | done, tested (incl. real Kaggle output) |
+| M4 | Kaggle worker script + notebook cell | next |
 | M6–M9 | Week 2: diffusion editing, edit tasks, rebuild, before/after | planned |
 
 ## 1. Run locally
@@ -37,7 +37,7 @@ cd backend
 python -m venv .venv
 .venv/Scripts/activate            # Windows (Git Bash: source .venv/Scripts/activate); Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest tests -q         # 25 passed
+python -m pytest tests -q         # 52 passed (~1 min)
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 Open http://localhost:8000/docs. Use **Authorize** with your email and password after signing up.
@@ -56,6 +56,9 @@ Open http://localhost:8000/docs. Use **Authorize** with your email and password 
 | `BACKEND_WORKER_TOKEN` | random, persisted in `<data>/.worker_token` | secret for `/worker/*` and `POST /tasks/{id}/progress` |
 | `BACKEND_LEASE_SECONDS` | `300` | a running task with no progress/heartbeat for this long is re-queued |
 | `BACKEND_MAX_ATTEMPTS` | `2` | tries per task before it is marked `failed` |
+| `BACKEND_UPLOAD_CHUNK_MB` | `32` | default chunk size for worker uploads (max 90, below Cloudflare's 100 MB) |
+| `BACKEND_UPLOAD_MAX_ARTIFACT_MB` | `20480` | largest single artifact / unpacked archive |
+| `BACKEND_FILE_URL_TTL_MINUTES` | `360` | lifetime of the signed file URLs returned by `/scene` |
 | `BACKEND_CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173,...` | comma-separated frontend origins |
 
 ## 3. Storage layout
@@ -68,8 +71,15 @@ backend/data/
   app.db                         users, projects, tasks, artifacts
   workspace/<project_id>/
     video/input.<ext>            the uploaded original (replaced only by a new upload)
-    frames/ poses/ scene/ gs/ export/ metrics/ manifest.json      written back by the worker (M3/M4)
+    frames/images/000001.jpg …   frames/frames_index.json
+    poses/<method>/…             scene/sparse/0/{cameras,images,points3D}.{bin,txt}  scene/images/  scene/points.ply
+    gs/…  metrics/…  manifest.json
+    export/scene.splat  export/scene.ply  export/cameras.json  export/scene_meta.json
+  uploads/<upload_id>.part       chunks of uploads in progress
+  staging/<task_id>/…            verified uploads of a running task; moved into workspace/ when the task completes
 ```
+Names and folders are exactly the ones Person A's pipeline writes, and files are stored byte-for-byte. A's json files
+contain absolute `/kaggle/working/...` paths; the API never returns them (the scene metadata is whitelisted).
 `backend/data/` is git-ignored. Back it up if the demo data matters.
 
 ## 4. Worker token (Kaggle ↔ backend)

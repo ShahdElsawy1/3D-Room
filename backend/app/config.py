@@ -41,6 +41,14 @@ class Settings:
     lease_seconds: int = field(default_factory=lambda: int(_env("LEASE_SECONDS", "300")))
     max_attempts: int = field(default_factory=lambda: int(_env("MAX_ATTEMPTS", "2")))
 
+    # Artifact uploads from the worker. Cloudflare limits one request to 100 MB, so chunks stay below that.
+    upload_chunk_mb: int = field(default_factory=lambda: int(_env("UPLOAD_CHUNK_MB", "32")))
+    upload_max_chunk_bytes: int = 90 * 1024 * 1024
+    upload_min_chunk_bytes: int = 1024
+    upload_max_artifact_mb: int = field(default_factory=lambda: int(_env("UPLOAD_MAX_ARTIFACT_MB", "20480")))
+    # lifetime of the signed file URLs returned by GET /projects/{id}/scene (viewers can't send auth headers)
+    file_url_ttl_minutes: int = field(default_factory=lambda: int(_env("FILE_URL_TTL_MINUTES", "360")))
+
     cors_origins: list[str] = field(default_factory=lambda: [o.strip() for o in _env(
         "CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()])
 

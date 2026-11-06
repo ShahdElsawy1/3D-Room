@@ -20,7 +20,7 @@ Base URL: the Cloudflare tunnel URL, or `http://localhost:8000` locally. Live, a
 | Projects list | `GET /projects`, `POST /projects` |
 | Upload + submit | `POST /projects/{id}/video`, then `POST /projects/{id}/reconstruct` |
 | Progress | poll `GET /tasks/{task_id}` every 2–3 s until `status` is `done`, `failed` or `cancelled`; optional `POST /tasks/{id}/cancel` |
-| Viewer | `GET /projects/{id}/scene` *(M3)* |
+| Viewer | `GET /projects/{id}/scene`, then load `splat.url` |
 
 ---
 
@@ -179,6 +179,60 @@ must not call them. See [WORKER_PROTOCOL.md](WORKER_PROTOCOL.md).)*
 
 ---
 
-## Coming next (shapes fixed when each milestone lands)
-- `GET /projects/{id}/scene` → splat URL, cameras, metadata *(M3)*
+## Scene (viewer page)
+
+### `GET /projects/{id}/scene` → 200
+Optional `?version=original` (the default). Week 2 adds edit versions for the before/after toggle.
+```json
+{
+  "project_id": "…", "version": "original", "task_id": "…",
+  "splat":  {"url": "/projects/…/files/export/scene.splat?t=eyJ…", "size_bytes": 33731776, "sha256": "…"},
+  "ply":    {"url": "/projects/…/files/export/scene.ply?t=eyJ…",   "size_bytes": 248773326, "sha256": "…"},
+  "points": {"url": "/projects/…/files/scene/points.ply?t=eyJ…",   "size_bytes": 158504, "sha256": null},
+  "cameras_url": "/projects/…/files/export/cameras.json?t=eyJ…",
+  "cameras": [{"id": 1, "img_name": "000001.jpg", "width": 960, "height": 540,
+               "position": [0.1, -0.2, 0.3], "rotation": [[1,0,0],[0,1,0],[0,0,1]],
+               "fx": 771.2, "fy": 771.2, "cx": 480.0, "cy": 270.0}],
+  "meta": {"num_gaussians": 1054118, "bbox_min": [-2.9, -2.1, -2.4], "bbox_max": [2.8, 3.0, 2.1],
+           "median_position": [-0.3, -0.1, -0.3], "trainer": "gsplat", "iters": 30000,
+           "splat_mb": 32.17, "ply_mb": 237.25, "num_cameras": 61,
+           "heldout": {"psnr": 25.88, "ssim": 0.877, "lpips": 0.077}, "pose_method": "glomap",
+           "coordinate_note": "COLMAP/OpenCV world: +y is DOWN. …"},
+  "up_vector": [0.0, -1.0, 0.0],
+  "urls_expire_at": "2026-11-06T10:12:00Z"
+}
+```
+The example values come from the team's real Kaggle run (61 frames, 30k iterations).
+
+- **URLs are relative**: prefix them with the API base URL. They carry a signed `?t=` token, so they work **without an
+  Authorization header**. That is how splat viewers, `<img>` and `<video>` load files. They expire after
+  6 h (`urls_expire_at`). When they do, call `/scene` again.
+- **Load `splat.url`** in the viewer (`.splat` format, 32 bytes per Gaussian). `ply` is the full-quality file (~250 MB),
+  so don't load it by default.
+- **Set the camera up-vector to `up_vector` (0, −1, 0)**, otherwise the room is upside down (COLMAP's y axis points down).
+- **Fallback** if splat rendering fails (spec §4.5): render `points.url` (a coloured point cloud PLY) with three.js
+  `PLYLoader`. `points` can be `null` if the pose method produced no point cloud.
+- **`cameras`** are the training cameras. Use them for the Week 2 hooks *"load a specific camera pose"* and *"snap to a
+  training camera"*. `rotation` is camera-to-world (3×3), `position` is the camera centre in world coordinates,
+  and `fx fy cx cy` are pinhole intrinsics in pixels of a `width`×`height` frame.
+- Files support HTTP **Range** (`206 Partial Content`), so large downloads can resume.
+
+Errors: `404 {"detail": "Reconstruction still in progress"}` while a task is pending/running,
+`404 {"detail": "No reconstructed scene for this project yet"}` otherwise.
+
+### `GET /projects/{id}/artifacts` → 200
+What is stored for the project (useful for a debug or details panel):
+`[{"kind": "splat", "version": "original", "path": "export/scene.splat", "is_dir": false, "size_bytes": 33731776,
+"sha256": "…", "task_id": "…", "created_at": "…Z", "info": {"num_gaussians": 1054118}}]`.
+Kinds: `video, frames, poses, scene, gs, metrics, manifest, splat, ply, cameras, scene_meta`. `path` is the location
+inside the project (Person A's layout), not a server path.
+
+### `GET /projects/{id}/files/{path}`
+Downloads one stored file, e.g. `files/frames/images/000012.jpg` (Week 2 frame grid). Auth: the signed `?t=` from
+`/scene`, **or** the owner's `Authorization: Bearer`. Only files that belong to a stored artifact are served.
+Anything else is `404`.
+
+---
+
+## Coming next
 - Week 2: edit sessions, masks, seed previews, accept/regenerate, frame-x-of-N progress, rebuild, `?version=` for before/after

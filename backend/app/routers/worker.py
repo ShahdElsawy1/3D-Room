@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from ..artifacts import ArtifactError, missing_required, promote
 from ..config import Settings
 from ..deps import get_db, get_settings, require_worker
 from ..models import Task, TaskStatus, utcnow
@@ -86,12 +87,24 @@ def task_video(task_id: str, db: Session = Depends(get_db), settings: Settings =
 
 
 @router.post("/tasks/{task_id}/complete")
-def complete(task_id: str, body: CompleteIn, db: Session = Depends(get_db)):
+def complete(task_id: str, body: CompleteIn, db: Session = Depends(get_db),
+             settings: Settings = Depends(get_settings)):
+    """Only succeeds once every required artifact of this task is uploaded and verified; then all of the task's
+    artifacts are moved into the project folder together (no mix of old and new results)."""
     t = _task_for_worker(db, task_id, body.worker_id)
+    missing = missing_required(db, t.type, t.id)
+    if missing:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            {"message": "required artifacts not uploaded", "missing": missing})
+    try:
+        stored = promote(db, settings, t)
+    except (ArtifactError, OSError) as e:
+        db.rollback()
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"could not store artifacts: {e}")
     t.status, t.progress, t.stage = TaskStatus.done.value, 100.0, "done"
     t.error, t.result, t.finished_at, t.lease_expires_at = None, body.result, utcnow(), None
     db.commit()
-    return {"ok": True, "status": t.status}
+    return {"ok": True, "status": t.status, "artifacts": sorted(a.kind for a in stored)}
 
 
 @router.post("/tasks/{task_id}/fail")

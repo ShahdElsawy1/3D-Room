@@ -1,4 +1,5 @@
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from conftest import signup
@@ -72,7 +73,7 @@ def test_full_happy_path(client, auth, worker, project_with_video):
     tid = client.post(f"/projects/{project_with_video}/reconstruct", json={"method": "glomap", "long_side": 960},
                       headers=auth).json()["id"]
 
-    r = client.post("/worker/claim", json={"worker_id": "kaggle-1"}, headers=worker)
+    r = client.post("/worker/claim", json={"worker_id": "test-worker"}, headers=worker)
     assert r.status_code == 200
     c = r.json()
     assert c["task"]["id"] == tid and c["task"]["status"] == "running" and c["task"]["attempts"] == 1
@@ -95,13 +96,20 @@ def test_full_happy_path(client, auth, worker, project_with_video):
     t = client.get(f"/tasks/{tid}", headers=auth).json()
     assert t["status"] == "running" and t["progress"] == 99.0
 
-    hb = client.post(f"/worker/tasks/{tid}/heartbeat", json={"worker_id": "kaggle-1", "stage": "uploading results"},
+    hb = client.post(f"/worker/tasks/{tid}/heartbeat", json={"worker_id": "test-worker", "stage": "uploading results"},
                      headers=worker).json()
     assert hb["status"] == "running" and hb["cancel"] is False and hb["lease_expires_at"].endswith("Z")
 
-    r = client.post(f"/worker/tasks/{tid}/complete", json={"worker_id": "kaggle-1", "result": {"num_gaussians": 1000}},
+    # completing without the required artifacts is refused (M3)
+    r = client.post(f"/worker/tasks/{tid}/complete", json={"worker_id": "test-worker"}, headers=worker)
+    assert r.status_code == 409
+    assert set(r.json()["detail"]["missing"]) == {"frames", "scene", "splat", "cameras", "scene_meta"}
+    from conftest import fake_pipeline_output, upload_reconstruction
+    import tempfile
+    upload_reconstruction(client, worker, tid, fake_pipeline_output(Path(tempfile.mkdtemp())), )
+    r = client.post(f"/worker/tasks/{tid}/complete", json={"worker_id": "test-worker", "result": {"num_gaussians": 1000}},
                     headers=worker)
-    assert r.status_code == 200
+    assert r.status_code == 200, r.text
     t = client.get(f"/tasks/{tid}", headers=auth).json()
     assert (t["status"], t["progress"], t["result"]) == ("done", 100.0, {"num_gaussians": 1000})
     assert t["finished_at"] and t["error"] is None

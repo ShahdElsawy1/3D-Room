@@ -62,9 +62,65 @@ sends a heartbeat every ~60 s from a background thread. If the reply has `"cance
 `409` (the lease was lost and the task was re-queued or taken by someone else), the worker stops the pipeline and
 drops the task.
 
-## Verified so far (M2)
+## Artifact upload (M3)
+
+All results go back through **resumable chunked uploads**. Cloudflare limits one request to 100 MB, and the real
+`scene.ply` is ~250 MB. A dropped connection must also not restart a large upload.
+
+| Method | Path | Body / headers | Reply |
+|---|---|---|---|
+| POST | `/worker/tasks/{id}/uploads` | `{"worker_id", "kind", "size_bytes", "sha256", "chunk_size"?}` | upload object |
+| GET | `/worker/uploads/{upload_id}` | – | upload object |
+| PUT | `/worker/uploads/{upload_id}/chunks/{i}` | raw bytes; headers `X-Worker-Id`, optional `X-Chunk-Sha256` | `{"index", "received", "total_chunks", "duplicate"}` |
+| POST | `/worker/uploads/{upload_id}/complete` | `{"worker_id"}` | upload object, `status: "complete"` |
+| GET | `/worker/projects/{pid}/files/{path}` | – | a stored file (Week 2 rebuild inputs), Range supported |
+
+Upload object: `{"upload_id", "kind", "path", "is_archive", "size_bytes", "chunk_size", "total_chunks",
+"status": "open"|"complete", "received", "missing": [chunk indices], "meta"}`.
+
+**Algorithm (worker)**
+1. `POST …/uploads` with the file's size and sha256. The reply's `missing` lists the chunks to send. If the same content
+   was started before (a crash, or a retry), the **same** upload comes back with only the missing chunks. If exactly this
+   content is already stored for this task, `status` is `complete` and nothing needs sending.
+2. `PUT` each missing chunk (any order). Repeating a chunk is harmless. Chunk `i` is bytes
+   `[i*chunk_size, (i+1)*chunk_size)`. Default chunk size is 32 MB, maximum 90 MB.
+3. `POST …/complete`. The server checks that every chunk is present (`409` + `missing` otherwise), then checks the
+   **whole-file sha256**. On a mismatch it returns `422` and discards all chunks, so the worker uploads again. Then it
+   validates the content (below). Only then is the upload `complete`.
+4. After all uploads: `POST /worker/tasks/{id}/complete`. This returns `409 {"missing": [...]}` unless the required kinds are
+   there. All of the task's artifacts are then moved into the project **together**. A failed or cancelled run never
+   replaces a good scene.
+
+**Artifact kinds.** Each kind has one fixed location in Person A's layout, so the worker can't write anywhere else:
+
+| kind | stored at | upload as | required | validated |
+|---|---|---|---|---|
+| `frames` | `frames/` | tar | ✔ | ≥1 jpg/png in `frames/images/`, valid `frames_index.json` |
+| `scene` | `scene/` | tar | ✔ | `sparse/0/{cameras,images,points3D}.{bin,txt}`, non-empty `images/` |
+| `splat` | `export/scene.splat` | file | ✔ | size is a positive multiple of 32 |
+| `cameras` | `export/cameras.json` | file | ✔ | JSON list with img_name, width, height, position, rotation, fx, fy, cx, cy |
+| `scene_meta` | `export/scene_meta.json` | file | ✔ | JSON |
+| `ply` | `export/scene.ply` | file | | PLY header |
+| `poses` | `poses/` | tar | | ≥1 method folder (VGGT depth/conf for Week 2 live here) |
+| `gs` | `gs/` | tar | | non-empty (checkpoints for the Week 2 fine-tune) |
+| `metrics` | `metrics/` | tar | | non-empty |
+| `manifest` | `manifest.json` | file | | JSON |
+
+**Folder archives** are tar or tar.gz files whose entries all start with the folder name (`frames/images/000001.jpg`).
+Rejected: absolute paths, `..`, entries outside the folder, devices/FIFOs, and links that point outside the project.
+**Symlinks** (A's `scene/images` → `../poses/<m>/images` → `../../frames/images` on Kaggle) are turned into real copies.
+Their targets must already be uploaded, so the **upload order is `frames`, `poses`, `scene`, then the rest**. Using
+`tar -h` (dereference) on the worker also works.
+
+## Verified so far
 - 25 backend tests: life cycle, retries, lease expiry, cancellation, worker isolation, token checks, queue order.
 - Live server + Person A's real `run_pipeline.py --only extract` (CPU, real ffmpeg) with `W1_WORKER_TOKEN` set:
   all 6 progress posts accepted, and the task showed `extracting frames 15 %`. Without the token: `401`, and
   the pipeline continued.
-- Not yet: the worker loop itself, artifact upload, and a run on Kaggle through the tunnel (M3/M4).
+- M3: 52 backend tests (resume after interruption, duplicate/out-of-order chunks, chunk and whole-file checksum
+  failures, missing chunks, malicious archives, per-kind validation, missing artifacts, access control, 64 MB Range
+  downloads).
+- M3 with the team's **real Kaggle output** (`demo_export.zip`) against a live server: 8 artifacts uploaded with
+  32 MB chunks. The 249 MB `scene.ply` was interrupted after 3/8 chunks and resumed with only the 5 missing.
+  Stored files are byte-identical to the originals. Interrupted download resumed with `curl -C -`, and the sha matches.
+- Not yet: the worker loop itself, and a run on Kaggle through the tunnel (M4).

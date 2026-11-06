@@ -175,3 +175,54 @@ class CompleteIn(WorkerIn):
 class FailIn(WorkerIn):
     error: str = Field(max_length=20000)
     retryable: bool = True
+
+
+# ---------------------------------------------------------------- artifact uploads (worker)
+class UploadCreate(WorkerIn):
+    kind: str = Field(description="one of the artifact kinds in app/artifacts.py (frames, scene, splat, ...)")
+    size_bytes: int = Field(gt=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    chunk_size: int | None = Field(default=None, description="bytes per chunk; default BACKEND_UPLOAD_CHUNK_MB")
+    version: Literal["original"] = "original"
+
+
+class UploadOut(BaseModel):
+    upload_id: str
+    kind: str
+    path: str
+    is_archive: bool
+    size_bytes: int
+    chunk_size: int
+    total_chunks: int
+    status: Literal["open", "complete"]
+    received: int
+    missing: list[int]
+    meta: dict | None = None
+
+
+class ChunkAck(BaseModel):
+    index: int
+    received: int
+    total_chunks: int
+    duplicate: bool
+
+
+# ---------------------------------------------------------------- scene (frontend viewer)
+class FileRef(BaseModel):
+    url: str
+    size_bytes: int
+    sha256: str | None = None
+
+
+class SceneOut(BaseModel):
+    project_id: str
+    version: str
+    task_id: str | None
+    splat: FileRef
+    ply: FileRef | None = None
+    points: FileRef | None = None          # coloured sparse cloud (scene/points.ply): three.js fallback
+    cameras_url: str
+    cameras: list[dict]
+    meta: dict
+    up_vector: list[float]
+    urls_expire_at: datetime
