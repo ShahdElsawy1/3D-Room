@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-time setup for a Kaggle GPU notebook (2xT4 or P100). Run from the repo root:
 #     bash scripts/setup_kaggle.sh            # everything
-#     bash scripts/setup_kaggle.sh vggt       # only VGGT   (also: colmap | gsplat | base)
+#     bash scripts/setup_kaggle.sh fast       # recommended: base + VGGT + pycolmap 4 (GLOMAP) + gsplat, no conda
+#     bash scripts/setup_kaggle.sh vggt       # only VGGT   (also: colmap | pycolmap | gsplat | base)
 # Needs "Internet: On" in the notebook settings. Safe to re-run.
 set -uo pipefail
 : > "${WORK:-/kaggle/working}/env.sh" 2>/dev/null || true
@@ -59,6 +60,54 @@ colmap_glomap() {
   fi
 }
 
+pycolmap4() {
+  log "pycolmap 4 (GLOMAP built in, GPU SIFT via CUDA) - isolated folder"
+  # Installed with --target and WITHOUT dependencies, so it cannot replace the `pycolmap` fork that gsplat's examples need
+  # or shadow the system numpy. Only stages/s2b_poses_glomap.py puts it on sys.path (through W1_PYCOLMAP_DIR).
+  TARGET="$WORK/tools/pycolmap4"; mkdir -p "$TARGET"
+  python -m pip install -q --no-deps --target "$TARGET" "pycolmap-cuda12==4.2.1" \
+    || python -m pip install -q --no-deps --target "$TARGET" "pycolmap==4.2.1" || echo "!! pycolmap 4 install failed"
+  echo "export W1_PYCOLMAP_DIR=$TARGET" >> "$WORK/env.sh"
+  W1_PYCOLMAP_DIR="$TARGET" python -c "
+import sys; sys.path.insert(0, '$TARGET'); import pycolmap
+print('pycolmap', pycolmap.__version__, '| cuda:', pycolmap.has_cuda, '| global_mapping:', hasattr(pycolmap, 'global_mapping'))" \
+    || echo "!! pycolmap 4 import failed - the GLOMAP stage will fall back to the colmap/glomap binaries (--backend cli)"
+}
+
+sam2() {
+  log "SAM 2.1 (Week 2 masks) - Apache-2.0 code + weights, weights come from the Hugging Face hub at first use"
+  # --no-deps: its pinned torch requirement must not replace Kaggle's torch (gsplat is compiled against it).
+  # SAM2_BUILD_CUDA=0 skips the optional connected-components CUDA extension (our masks are cleaned with OpenCV).
+  python -m pip install -q hydra-core iopath huggingface_hub pillow tqdm
+  SAM2_BUILD_CUDA=0 SAM2_BUILD_ALLOW_ERRORS=1 python -m pip install -q --no-deps --no-build-isolation \
+    "git+https://github.com/facebookresearch/sam2.git" || echo "!! sam2 install failed"
+  python -c "
+import torch, sam2
+from sam2.build_sam import build_sam2_video_predictor_hf
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+print('sam2 import OK | torch', torch.__version__, '| cuda', torch.cuda.is_available())" \
+    || echo "!! sam2 import failed - run tools/w2_selftest.py to see the exact error"
+}
+
+diffusion() {
+  log "Diffusion editing (Week 2): Qwen-Image-2.1 via diffusers + bitsandbytes"
+  # QwenImage21Pipeline needs transformers>=5.17 and a diffusers that contains it (PyPI release first, git main as fallback).
+  # Run this AFTER the SAM 2 / gsplat work of the session (it upgrades transformers), or in its own session.
+  python -m pip install -q -U "transformers>=5.17" accelerate bitsandbytes safetensors sentencepiece protobuf peft \
+    || echo "!! transformers/bitsandbytes install failed"
+  python -m pip install -q -U diffusers
+  python -c "from diffusers import QwenImage21Pipeline" 2>/dev/null \
+    || python -m pip install -q -U "git+https://github.com/huggingface/diffusers" || echo "!! diffusers install failed"
+  python -c "
+import torch, transformers, diffusers, bitsandbytes
+from diffusers import QwenImage21Pipeline
+from diffusers.quantizers import PipelineQuantizationConfig
+print('diffusion OK | torch', torch.__version__, '| transformers', transformers.__version__, '| diffusers', diffusers.__version__,
+      '| bitsandbytes', bitsandbytes.__version__, '| cuda', torch.cuda.is_available())" \
+    || echo "!! diffusion import failed - the error above is the exact missing piece"
+  echo "Qwen-Image-2.1 weights (~40 GB download) come from the Hugging Face hub at first use; license: Qwen Research (non-commercial)."
+}
+
 gsplat() {
   log "gsplat + examples"
   export TORCH_CUDA_ARCH_LIST="7.5"          # T4 = compute capability 7.5
@@ -90,8 +139,13 @@ case "$what" in
   base) base ;;
   vggt) vggt ;;
   colmap) colmap_glomap ;;
+  pycolmap) pycolmap4 ;;
   gsplat) gsplat ;;
-  all) base; vggt; colmap_glomap; gsplat ;;
-  *) echo "usage: $0 [all|base|vggt|colmap|gsplat]"; exit 1 ;;
+  all) base; vggt; colmap_glomap; pycolmap4; gsplat ;;
+  sam2) sam2 ;;
+  diffusion) diffusion ;;                     # Week 2 diffusion edit (stages/w2_edit.py)
+  w2) base; gsplat; sam2 ;;                   # Week 2 notebook: SAM 2.1 + gsplat (rebuild); no VGGT / pycolmap needed
+  fast) base; vggt; pycolmap4; gsplat ;;      # no conda/colmap/glomap binaries: GLOMAP runs through pycolmap 4
+  *) echo "usage: $0 [all|fast|w2|base|vggt|colmap|pycolmap|sam2|gsplat|diffusion]"; exit 1 ;;
 esac
 log "done. Next: source $WORK/env.sh"

@@ -111,6 +111,25 @@ class Config:
     @property
     def manifest_path(self): return self.p("manifest.json")
 
+    # ---- project-relative paths (B's note: absolute paths do not survive a copy to another machine) ------------
+    def rel(self, path) -> str | None:
+        """'<root>/<project>/gs/x/ckpt.pt' -> 'gs/x/ckpt.pt' (POSIX). None stays None. Paths outside the project are
+        returned unchanged so nothing is silently lost."""
+        if path is None or path == "":
+            return None
+        return rel_to_project(str(path), self.project_id, self.project)
+
+    def resolve(self, path) -> Path | None:
+        """Inverse of rel(). Accepts a project-relative path (new files) AND a legacy absolute path written by an
+        earlier version of the pipeline (possibly on another machine): everything after '/<project_id>/' is re-rooted."""
+        if path is None or path == "":
+            return None
+        r = rel_to_project(str(path), self.project_id, self.project)
+        pr = Path(r)
+        if pr.is_absolute():
+            return pr
+        return self.project / pr
+
     def ensure(self) -> None:
         for d in (self.video_dir, self.images_dir, self.scene_dir, self.gs_dir,
                   self.export_dir, self.metrics_dir):
@@ -118,6 +137,20 @@ class Config:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2)
+
+
+def rel_to_project(path: str, project_id: str, project_dir=None) -> str:
+    """Make `path` relative to the project folder; works for paths written on another OS/root (Kaggle -> backend)."""
+    p = str(path).replace("\\", "/")
+    marker = f"/{project_id}/"
+    if marker in p:
+        return p.split(marker, 1)[1]
+    if project_dir is not None:
+        try:
+            return Path(p).resolve().relative_to(Path(project_dir).resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    return p
 
 
 def add_common_args(ap) -> None:

@@ -52,10 +52,9 @@ class Progress:
                 self._last_post = now
                 try:
                     import requests
-                    # optional worker token (backend exposed via Cloudflare); unset -> no header, as before
-                    token = os.environ.get("W1_WORKER_TOKEN")
+                    token = os.environ.get("W1_WORKER_TOKEN")           # backend worker auth (Person B, approved)
                     headers = {"Authorization": f"Bearer {token}"} if token else None
-                    requests.post(f"{self.url}/tasks/{self.task_id}/progress", json=rec, headers=headers, timeout=5)
+                    requests.post(f"{self.url}/tasks/{self.task_id}/progress", json=rec, timeout=5, headers=headers)
                 except Exception as e:  # backend down / tunnel dropped: keep working
                     print(f"[progress] backend unreachable ({e.__class__.__name__}); continuing", flush=True)
 

@@ -92,13 +92,15 @@ def ply_to_splat(ply_path, splat_path, sort: bool = True) -> dict:
 
 
 # ------------------------------------------------------------------- cameras
-def cameras_json(model, frame_index=None) -> list:
+def cameras_json(model, frame_index=None, poses=None) -> list:
     """Training cameras, Inria-viewer style (rotation = camera-to-world)."""
     out = []
     for im in sorted(model.images.values(), key=lambda i: i.name):
         cam = model.cameras[im.camera_id]
         K = cam.K()
         R_w2c, t = im.R, im.tvec
+        if poses is not None and im.name in poses:        # poses in the splat's own space (common/gs_space.py)
+            R_w2c, t = np.asarray(poses[im.name])[:3, :3], np.asarray(poses[im.name])[:3, 3]
         out.append({"id": im.id, "img_name": im.name, "width": cam.width, "height": cam.height,
                     "position": (-R_w2c.T @ t).tolist(), "rotation": R_w2c.T.tolist(),
                     "fx": float(K[0, 0]), "fy": float(K[1, 1]), "cx": float(K[0, 2]), "cy": float(K[1, 2])})

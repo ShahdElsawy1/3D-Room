@@ -76,12 +76,39 @@ def run_with_progress(cmd, log_path: Path, env, prog: Progress, total: int):
         raise RuntimeError(f"trainer exited with code {rc}. Log tail ({log_path}):\n{tail}")
 
 
+def patch_pycolmap_numpy2() -> None:
+    """The pycolmap fork used by gsplat's examples does `np.uint64(-1)`, an OverflowError on numpy>=2.
+    Replace it with the identical value spelled correctly (all bits set). Idempotent."""
+    import importlib.util
+    spec = importlib.util.find_spec("pycolmap")          # find_spec does not import the package
+    if not spec or not spec.origin:
+        return
+    f = Path(spec.origin).parent / "scene_manager.py"
+    if f.exists():
+        t = f.read_text()
+        if "np.uint64(-1)" in t:
+            f.write_text(t.replace("np.uint64(-1)", "np.uint64(np.iinfo(np.uint64).max)"))
+            print(f"[train] patched {f} for numpy>=2 (np.uint64(-1))", flush=True)
+
+
 def train_gsplat(args, cfg, iters, prog, env):
     root = find_dir(args.gsplat_dir, "GSPLAT_DIR", ["/kaggle/working/gsplat", "gsplat", "../gsplat"],
                     "examples/simple_trainer.py")
     script = root / "examples" / "simple_trainer.py"
-    help_txt = subprocess.run([sys.executable, str(script), "default", "--help"], capture_output=True,
-                              text=True, env=env, cwd=root / "examples").stdout
+    # gsplat's examples/datasets/ has no __init__.py, so it is a namespace package and loses against the installed
+    # Hugging Face `datasets` package ("No module named 'datasets.colmap'"). A regular package in the script's own
+    # directory wins, so make it one.
+    for d in (root / "examples" / "datasets",):
+        if d.is_dir() and not (d / "__init__.py").exists():
+            (d / "__init__.py").write_text("")
+            print(f"[train] created {d / '__init__.py'} (avoids clash with Hugging Face 'datasets')", flush=True)
+    patch_pycolmap_numpy2()
+    probe = subprocess.run([sys.executable, str(script), "default", "--help"], capture_output=True,
+                           text=True, env=env, cwd=root / "examples")
+    help_txt = probe.stdout
+    if "--data" not in help_txt:        # probing flags failed: do not guess flag spellings
+        raise RuntimeError("could not read the gsplat trainer's --help (flag names unknown). stderr tail:\n" +
+                           "\n".join(probe.stderr.splitlines()[-15:]))
     res_dir = cfg.gs_dir / f"gsplat_{iters}"
     cmd = [sys.executable, str(script), "default",
            "--data_dir" if "--data_dir" in help_txt else "--data-dir", str(cfg.scene_dir.resolve()),
@@ -179,9 +206,11 @@ def main(argv=None):
             res_dir = (train_gsplat if args.trainer == "gsplat" else train_inria)(args, cfg, iters, prog, env)
             train_s = time.perf_counter() - t0
             info = collect_outputs(args.trainer, res_dir)
-            info.update(iters=iters, mode=args.mode, train_wall_seconds=round(train_s, 1))
+            info.update(iters=iters, mode=args.mode, train_wall_seconds=round(train_s, 1), holdout_every=args.holdout_every)
             if not (info.get("ckpt") or info.get("ply")):
                 raise RuntimeError(f"trainer finished but produced no checkpoint/PLY under {res_dir}")
+            for k in ("result_dir", "ckpt", "ply"):          # project-relative, not '/kaggle/working/...'
+                info[k] = cfg.rel(info.get(k))
             write_json(cfg.gs_dir / "latest.json", info)
             m.extra.update({k: v for k, v in info.items() if k != "stats"})
             print(f"[train] {args.trainer} {iters} iters in {train_s/60:.1f} min; "
