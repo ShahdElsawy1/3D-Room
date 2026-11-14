@@ -68,27 +68,29 @@ def main(argv=None):
     (out / "VRAM_RUNTIME_TABLE.md").write_text("\n".join(table) + "\n")
 
     # ------------------------------------------------ handoff
-    P = cfg.project.resolve()
     chosen = read_json(cfg.scene_dir / "chosen.json", {})
     idx = read_json(cfg.frames_index, {})
+    R = cfg.rel                                    # every path below is relative to the project folder
     manifest = {
-        "project": cfg.project_id, "root": str(P), "pose_method": chosen.get("method"),
-        "frames": {"dir": str(cfg.images_dir.resolve()), "count": idx.get("kept"), "size_wh": idx.get("image_size_wh"),
-                   "index": str(cfg.frames_index.resolve()), "sampled_fps": idx.get("fps"),
+        "project": cfg.project_id, "root": ".", "paths_are_relative_to": "the project folder",
+        "pose_method": chosen.get("method"),
+        "frames": {"dir": R(cfg.images_dir), "count": idx.get("kept"), "size_wh": idx.get("image_size_wh"),
+                   "index": R(cfg.frames_index), "sampled_fps": idx.get("fps"),
                    "naming": "000001.jpg ... (1-based, zero-padded; identical names in the COLMAP model)"},
-        "colmap": {"scene_dir": str(cfg.scene_dir.resolve()), "sparse": str((cfg.scene_dir / "sparse" / "0").resolve()),
+        "colmap": {"scene_dir": R(cfg.scene_dir), "sparse": R(cfg.scene_dir / "sparse" / "0"),
                    "formats": ["bin", "txt"], "convention": "world->camera (OpenCV: +x right, +y down, +z forward); "
                    "qvec = (w,x,y,z)"},
-        "depth": ({"dir": str((cfg.poses_dir("vggt") / "depth").resolve()), "conf_dir": str((cfg.poses_dir("vggt") / "conf").resolve()),
+        "depth": ({"dir": R(cfg.poses_dir("vggt") / "depth"), "conf_dir": R(cfg.poses_dir("vggt") / "conf"),
                    "format": ".npy float16 z-depth at VGGT resolution, same world scale as sparse/0 (only valid when "
-                             "pose_method == vggt; otherwise rescale-align or render depth from the splat)",
-                   "meta": str((cfg.poses_dir("vggt") / "vggt_meta.json").resolve())}
+                             "pose_method == vggt; otherwise use week2/depth rendered from the splat)",
+                   "meta": R(cfg.poses_dir("vggt") / "vggt_meta.json")}
                   if (cfg.poses_dir("vggt") / "depth").exists() else None),
-        "splat": {"ply": str((cfg.export_dir / "scene.ply").resolve()), "splat": str((cfg.export_dir / "scene.splat").resolve()),
-                  "cameras": str((cfg.export_dir / "cameras.json").resolve()),
-                  "meta": str((cfg.export_dir / "scene_meta.json").resolve()),
-                  "trainer_output": str(cfg.gs_dir.resolve())},
-        "metrics_dir": str(cfg.metrics_dir.resolve()),
+        "splat": {"ply": R(cfg.export_dir / "scene.ply"), "splat": R(cfg.export_dir / "scene.splat"),
+                  "cameras": R(cfg.export_dir / "cameras.json"),
+                  "meta": R(cfg.export_dir / "scene_meta.json"),
+                  "trainer_output": R(cfg.gs_dir)},
+        "week2_inputs": R(cfg.p("week2", "inputs.json")) if cfg.p("week2", "inputs.json").exists() else None,
+        "metrics_dir": R(cfg.metrics_dir),
     }
     intr = None
     if (cfg.scene_dir / "sparse" / "0").exists():
@@ -114,10 +116,18 @@ def main(argv=None):
         "| trained splat | `export/scene.ply`, `export/scene.splat` | 3DGS PLY / compact .splat |",
         "| training cameras for the viewer | `export/cameras.json` | position + c2w rotation + fx fy cx cy |",
         "| trainer checkpoint | `gs/<trainer>_<iters>/ckpts/*.pt` (gsplat) | for fine-tuning in Week 2 (4.4) |",
+        "| **Week 2 inputs (start here)** | `week2/inputs.json` | image spaces + sizes, held-out split, depth sources, "
+        "checkpoint, `required_files` to upload |",
+        "| sparse depth per frame | `week2/sparse_depth/*.npy` | (N,3) [u, v, z] of visible COLMAP points, scene/images pixels |",
+        "| splat-rendered depth (GPU run) | `week2/depth/*.npy` | float16, valid for any pose method |",
         "| measurements | `metrics/*.json` | per-stage time + VRAM |", "",
         "## Things Week 2 must know", "",
         "- Frame `N` in `frames/images` has the SAME name in the COLMAP model. Use it as the key everywhere "
         "(masks, edited frames).",
+        "- **Image space:** if the GLOMAP scene was undistorted, `scene/images` is a slightly different size/pixels than "
+        "`frames/images` (see `week2/inputs.json -> images`). Masks and edits must be made on `scene/images` "
+        "(`recommended_edit_space`) or they will not line up with the splat's cameras.",
+        "- All paths in the JSON files are relative to the project folder; never use absolute paths from them.",
         "- Do not re-run pose estimation (Week 2 4.4): reuse `scene/sparse/0` and swap images.",
         "- **Lift to 3D / reprojection (4.2 method 3):** back-project masks with `poses/vggt/depth` + the VGGT-resolution "
         "intrinsics in `poses/vggt/vggt_meta.json` (`intrinsics_vggt_res`) and the poses in `scene/sparse/0` "

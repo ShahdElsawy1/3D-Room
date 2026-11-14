@@ -25,8 +25,9 @@ REPO = "https://github.com/<your-team>/<your-repo>.git"      # <- edit
 %cd /kaggle/working/repo/week1_pipeline
 """),
 code("""
-# 1. One-time setup: ffmpeg, VGGT, COLMAP(+GLOMAP), gsplat.  ~10-20 min the first time (gsplat compiles CUDA on first use).
-!bash scripts/setup_kaggle.sh all
+# 1. One-time setup: ffmpeg, VGGT, pycolmap 4 (GLOMAP built in, no conda), gsplat.  ~5-15 min the first time.
+#    (the old route with the conda colmap/glomap binaries is still there: `setup_kaggle.sh all`, then --backend cli)
+!bash scripts/setup_kaggle.sh fast
 """),
 code("""
 # 2. Environment for this session
@@ -53,8 +54,10 @@ code("""
 !python stages/s2a_poses_vggt.py --chunk-size 32 --overlap 8 --memory-sweep 8,16,32,48
 """),
 code("""
-# GLOMAP: features -> sequential matching -> global mapper.  (skip this cell if no global mapper installed -> use --method vggt)
-!python stages/s2b_poses_glomap.py --overlap 12
+# GLOMAP via pycolmap 4 (auto-detected through W1_PYCOLMAP_DIR): GPU SIFT -> hybrid matching -> global mapping
+# -> checks (falls back to incremental mapping if the result looks unreliable) -> prune bad frames -> undistort
+!python stages/s2b_poses_glomap.py
+# old route instead:  !python stages/s2b_poses_glomap.py --backend cli --overlap 12
 """),
 code("""
 # Comparison report + pick the method used for the project (writes scene/)
@@ -62,7 +65,12 @@ code("""
 from IPython.display import Markdown, Image, display
 display(Markdown(open(os.environ["W1_ROOT"] + "/demo/metrics/pose_comparison.md").read()))
 """),
-md("## Stage 4 - 3D Gaussian Splatting (quick = 7k iters to confirm, then full = 30k)"),
+code("""
+# OPTIONAL but recommended once per scene: which pose set renders held-out frames better? (trains twice at 7k iters, ~2 x 15 min;
+# your current choice is restored afterwards; table -> metrics/pose_method_psnr.md). Skip when poses already agree (see the Sim(3) line above).
+# !python tools/compare_pose_methods.py --iters 7000
+"""),
+md("## Stage 4 - 3D Gaussian Splatting (quick = 7k iters to confirm, then full = 30k). The 30k run is only worth it for the final output: on the 61-frame test it scored the same PSNR as 7k"),
 code("""
 !python stages/s4_train_3dgs.py --trainer gsplat --mode quick
 """),
@@ -74,19 +82,25 @@ md("## Stage 5 - export for the web viewer, then the generated deliverables"),
 code("""
 !python stages/s5_export_splat.py
 !python tools/make_reports.py
+# Week 2 inputs: week2/inputs.json (+ sparse depth, and per-frame depth rendered from the splat when the GPU is free)
+!python stages/s6_prepare_week2.py
+!python tools/make_reports.py
 !cat docs/generated/VRAM_RUNTIME_TABLE.md
 """),
 code("""
 # 6. Persist what matters from /kaggle/working before the session ends (PDF 4.3)
 !cd $W1_ROOT/demo && zip -qr /kaggle/working/demo_export.zip export manifest.json metrics scene frames/frames_index.json
 !ls -lh /kaggle/working/demo_export.zip
-# frames + poses + depth (Week 2 inputs) are in $W1_ROOT/demo/{frames,poses,scene}; zip them too if the backend needs them:
-# !cd $W1_ROOT/demo && zip -qr /kaggle/working/demo_week2_inputs.zip frames poses scene
+# Week 2 inputs: everything listed in week2/inputs.json -> "required_files" (frames, scene, week2/, checkpoint in gs/).
+import json, subprocess
+req = json.load(open(os.environ["W1_ROOT"] + "/demo/week2/inputs.json"))["required_files"]
+subprocess.run(["zip", "-qr", "/kaggle/working/demo_week2_inputs.zip", *req], cwd=os.environ["W1_ROOT"] + "/demo", check=True)
+!ls -lh /kaggle/working/demo_week2_inputs.zip
 """),
 md("""
 ### One-shot alternative
 ```
-!python run_pipeline.py --video $VIDEO --project demo --method both --train-mode quick
+!python run_pipeline.py --video $VIDEO --project demo --method both --train-mode quick   # add --glomap-backend cli to use the colmap/glomap binaries
 ```
 With the backend: add `--backend-url https://<your>.trycloudflare.com --task-id <id>` and the real stage progress is POSTed to `/tasks/{id}/progress`.
 """),

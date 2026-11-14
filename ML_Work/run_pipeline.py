@@ -23,7 +23,7 @@ sys.path.insert(0, str(HERE))
 from common.config import Config, add_common_args, read_json  # noqa: E402
 from common.progress import Progress  # noqa: E402
 
-ORDER = ["extract", "poses", "compare", "train", "export", "reports"]
+ORDER = ["extract", "poses", "compare", "train", "export", "reports", "week2"]
 
 
 def run(script: str, args: list[str], common: list[str]) -> None:
@@ -53,6 +53,13 @@ def main():
     ap.add_argument("--vggt-chunk", type=int, default=32)
     ap.add_argument("--vggt-overlap", type=int, default=8)
     ap.add_argument("--gsplat-dir", default="")
+    ap.add_argument("--glomap-backend", default="auto", choices=["auto", "cli", "pycolmap"],
+                    help="how the GLOMAP pose method runs: colmap/glomap binaries (cli), pip pycolmap>=4 (pycolmap), "
+                         "or pycolmap when usable (auto)")
+    ap.add_argument("--matcher", default="hybrid", choices=["hybrid", "sequential", "exhaustive"],
+                    help="[pycolmap backend] pair selection")
+    ap.add_argument("--render-depth", default="auto", choices=["auto", "on", "off"],
+                    help="Week 2 stage: render per-frame depth from the splat (needs GPU + gsplat + checkpoint)")
     args = ap.parse_args()
     if args.compare:
         args.method = "both"
@@ -81,7 +88,7 @@ def main():
                     run("stages/s2a_poses_vggt.py", ["--chunk-size", str(args.vggt_chunk),
                                                      "--overlap", str(args.vggt_overlap)], common)
                 if args.method in ("glomap", "both"):
-                    run("stages/s2b_poses_glomap.py", [], common)
+                    run("stages/s2b_poses_glomap.py", ["--backend", args.glomap_backend, "--matcher", args.matcher], common)
             elif st == "compare":      # also (always) materialises scene/ for the trainer
                 choose = "auto" if args.method == "both" else args.method
                 run("stages/s3_compare_poses.py", ["--choose", choose], common)
@@ -92,6 +99,9 @@ def main():
                 run("stages/s5_export_splat.py", [], common)
             elif st == "reports":
                 run("tools/make_reports.py", ["--out", str(HERE / "docs" / "generated")], common[:4])
+            elif st == "week2":      # saves the Week 2 inputs; never fails the run (warns instead)
+                run("stages/s6_prepare_week2.py", ["--render-depth", args.render_depth], common[:4])
+                run("tools/make_reports.py", ["--out", str(HERE / "docs" / "generated")], common[:4])   # refresh manifest
     if "export" in stages:          # only a run that reached export is a finished reconstruction
         prog.done()
     print(f"\n[run_pipeline] all done in {(time.perf_counter() - t_all) / 60:.1f} min. "

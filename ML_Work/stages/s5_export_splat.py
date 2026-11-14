@@ -48,12 +48,13 @@ def main(argv=None):
             out = cfg.export_dir
             out.mkdir(parents=True, exist_ok=True)
             ply = out / "scene.ply"
-            if latest.get("ply") and Path(latest["ply"]).exists():
-                shutil.copy2(latest["ply"], ply)
+            lply, lckpt = cfg.resolve(latest.get("ply")), cfg.resolve(latest.get("ckpt"))   # relative or legacy absolute
+            if lply and lply.exists():
+                shutil.copy2(lply, ply)
                 src = "trainer ply"
-            elif latest.get("ckpt"):
-                n = ckpt_to_ply(latest["ckpt"], ply)
-                src = f"converted from {Path(latest['ckpt']).name} ({n} Gaussians)"
+            elif lckpt and lckpt.exists():
+                n = ckpt_to_ply(lckpt, ply)
+                src = f"converted from {lckpt.name} ({n} Gaussians)"
             else:
                 raise RuntimeError("neither a PLY nor a checkpoint is available")
             prog.report(STAGE, 0.3)
@@ -62,7 +63,8 @@ def main(argv=None):
             prog.report(STAGE, 0.7)
 
             model = read_model(cfg.scene_dir / "sparse" / "0")
-            write_json(out / "cameras.json", cameras_json(model))
+            from common import gs_space  # noqa: E402
+            write_json(out / "cameras.json", cameras_json(model, poses=gs_space.load_poses(cfg.p("week2", gs_space.FILE))))
 
             meta = {**info, "source": src, "trainer": latest.get("trainer"), "iters": latest.get("iters"),
                     "ply_mb": round(ply.stat().st_size / 2**20, 2),

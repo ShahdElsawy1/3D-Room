@@ -145,8 +145,9 @@ def choose(cfg, name: str):
     for extra in ("points.ply",):
         if (src / extra).exists():
             shutil.copy2(src / extra, dst / extra)
-    write_json(dst / "chosen.json", {"method": name, "from": str(src),
-                                     "depth_dir": str(src / "depth") if (src / "depth").exists() else None})
+    # project-relative paths (they stay valid after the project folder is copied to another machine)
+    write_json(dst / "chosen.json", {"method": name, "from": cfg.rel(src),
+                                     "depth_dir": cfg.rel(src / "depth") if (src / "depth").exists() else None})
     print(f"[compare] scene/ <- {name}")
 
 
@@ -183,7 +184,7 @@ def main(argv=None):
         pick, para = suggest(vggt, glomap, traj)
     result = {"frames_total": len(list(cfg.images_dir.glob("*.jpg"))), "methods": rows,
               "trajectory_agreement": {k: v for k, v in (traj or {}).items() if not k.startswith("_")} or None,
-              "suggested_choice": pick, "draft_justification": para, "plot": str(png) if plotted else None}
+              "suggested_choice": pick, "draft_justification": para, "plot": cfg.rel(png) if plotted else None}
     write_json(cfg.metrics_dir / "pose_comparison.json", result)
 
     md = ["# VGGT vs GLOMAP", "", f"Frames fed to both methods: **{result['frames_total']}**", "",
