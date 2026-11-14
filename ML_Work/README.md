@@ -70,7 +70,7 @@ The raw Kaggle outputs are far too large for git (GitHub rejects files over 100 
 |---|---|---|
 | Week 1 export (`scene.splat`, `cameras.json`, metrics, manifest) — `demo_export.zip` | 235 MB |[3D_Output](https://drive.google.com/file/d/1Q_LnGrhhK8n2hhm88zl447pfq-WeymDY/view?usp=sharing)|
 | Week 2 inputs (`demo_week2_inputs.zip`: frames, poses, splat-rendered depth, checkpoint) | 329 MB | [Sam+Diffusion_Input](https://drive.google.com/file/d/1_mBt_VmWEgcPOGGnwZKrvYAPUde7mjDy/view?usp=sharing) |
-| Week 2 hand-off for backend + viewer (`handoff_demo.zip`) | 1.04 GB | _paste link_ |
+| Week 2 hand-off for backend + viewer (`handoff_demo.zip`) | 1.04 GB | [HandOff](https://drive.google.com/file/d/1yJ5UAiygO7xUa_sa3EkZN9jpO7rfxdLP/view?usp=sharing) |
 | Edit masks + edited frames (`e1_masks_edited.zip`) | _size_ | [_Masks&Edited_](https://drive.google.com/file/d/1sYcvC5e2MphX2fgcT-wOWwuImqU6Ez_F/view?usp=sharing) |
 
 Each link folder also has a `LARGE_FILES.md` (made by `tools/pack_for_github.py`) with sha256 checksums, so a download can be verified.
