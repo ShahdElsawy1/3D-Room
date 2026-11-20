@@ -25,12 +25,17 @@ real stage progress, and uploads every artifact back to the backend before the s
    `https://....trycloudflare.com` URL.
 2. Notebook settings (right sidebar): **Accelerator = GPU T4 x2**, **Internet = On**.
 3. *Add-ons -> Secrets*: add **`W1_WORKER_TOKEN`** = contents of `backend/data/.worker_token` on your machine,
-   and attach it to this notebook. Never paste the token into a cell.
+   and attach it to this notebook. Never paste the token into a cell. For Week 2 editing also add **`HF_TOKEN`**.
+4. Week 2 on 2x T4: start the backend with `BACKEND_EDIT_LONG_SIDE=512` (768 runs out of GPU memory in *edit all
+   frames*, which sends two images per frame) and `--timeout-keep-alive 60`.
+
+**If the laptop's wifi drops**: short drops are fine (the worker retries for ~7 min and resumes broken downloads).
+A longer drop kills a *quick* tunnel for good: restart `cloudflared`, put the new URL in cell 5, re-run cells 5 and 6.
 """),
 code("""
 # 1. Code: the repo (branch with backend/ + ML_Work/). For a private repo use a Kaggle Dataset instead (commented).
 REPO_URL = "https://github.com/ShahdElsawy1/3D-Room.git"
-BRANCH = "backend"
+BRANCH = "fix/klein-placement"           # Week 2 fixes; switch to "main" once merged
 !rm -rf /kaggle/working/repo && git clone -q --depth 1 -b $BRANCH $REPO_URL /kaggle/working/repo
 # !cp -r /kaggle/input/<your-code-dataset>/3D-Room /kaggle/working/repo
 ML_DIR = "/kaggle/working/repo/ML_Work"
@@ -81,22 +86,27 @@ code("""
 !pip install -q -r /kaggle/working/repo/backend/editing/requirements-kaggle.txt
 os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
 """),
+code("""
+# 5c. Week 2 only: SAM 2.1 for the object masks (segment / track). `setup_kaggle.sh all` does not install it.
+!cd $ML_DIR && bash scripts/setup_kaggle.sh sam2
+"""),
 md("""
 ## 6. Run the worker
 Runs until stopped (Interrupt), or until `--max-idle-minutes` without tasks (saves GPU quota). Each task: claim ->
 download video -> pipeline (real progress) -> upload results -> done. A user's *Cancel* stops the pipeline within
 one heartbeat. If this session dies, the backend re-queues the task after 5 minutes.
 
-Optional flags: `--upload-ply` (also the ~250 MB `scene.ply`), `--upload-checkpoint` (gsplat checkpoints for the
-Week 2 fine-tune). The viewer only needs the splat, which is uploaded first.
+Optional flags: `--upload-ply` (also the ~250 MB `scene.ply`). `--upload-checkpoint` (gsplat checkpoints, ~1 GB) is
+only needed for a Week 2 *fine-tune* rebuild; a *scratch* rebuild does not read it and is the better choice when the
+laptop's connection is slow. The viewer only needs the splat, which is uploaded first.
 
-Week 2 tasks (segment, track, edit preview/apply, rebuild) are claimed by the same worker. `segment`, `track` and
-`rebuild` need Person A's / C's `ML_Work/stages/w2_*.py`; without them those tasks fail with a clear message.
-One worker per GPU (spec: GPU 0 diffusion, GPU 1 SAM + 3DGS): run two cells in parallel with
+Week 2 tasks (segment, track, edit preview/apply, rebuild) are claimed by the same worker (`ML_Work/stages/w2_*.py`,
+`backend/editing/run_edit.py`). Measured on 2x T4: edit preview ~3.5 min model load + ~3 min per image; edit all
+frames ~2 min per frame at 512 px; scratch rebuild ~17 min training. Optionally one worker per GPU (spec: GPU 0 diffusion, GPU 1 SAM + 3DGS): run two cells in parallel with
 `CUDA_VISIBLE_DEVICES=0 ... --types edit_preview,edit_apply` and `CUDA_VISIBLE_DEVICES=1 ... --types reconstruct,segment,track,rebuild`.
 """),
 code("""
-!python $WORKER --backend-url $BACKEND_URL --ml-dir $ML_DIR --root /kaggle/working/workspace --max-idle-minutes 30
+!python $WORKER --backend-url $BACKEND_URL --ml-dir $ML_DIR --root /kaggle/working/workspace --max-idle-minutes 30 --upload-checkpoint
 """),
 md("""
 ## 7. After a run

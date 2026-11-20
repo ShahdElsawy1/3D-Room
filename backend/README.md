@@ -27,9 +27,9 @@ so a dropped Kaggle session can't break the API. The spec warns about this in §
 | M1 | auth (JWT), projects, video upload + validation, storage layout, data model | done, tested |
 | M2 | reconstruction tasks, status, real progress, worker claim/lease/retry/cancel API, worker token | done, tested |
 | M3 | resumable chunked artifact upload, validation, atomic promotion, scene endpoint, signed Range downloads | done, tested (incl. real Kaggle output) |
-| M4 | Kaggle worker (`worker/kaggle_worker.py`) + its own notebook, stale-upload cleanup | done, tested locally with a CPU stub; **Kaggle GPU + tunnel run pending** ([runbook](docs/KAGGLE_RUNBOOK.md)) |
+| M4 | Kaggle worker (`worker/kaggle_worker.py`) + its own notebook, stale-upload cleanup, resumable downloads | done; **full run on Kaggle 2x T4 through a quick tunnel** (2026-11-20: scan → edit → rebuild → before/after) ([runbook](docs/KAGGLE_RUNBOOK.md)) |
 | M6 | Week 2 model research (FLUX 3 Klein vs Qwen-Image-2.1, T4 precision) | done ([research](docs/W2_DIFFUSION_RESEARCH.md)) |
-| M7 | diffusion edit stage (`editing/`): reference frame x seeds, reference-conditioned frames, crop + hard mask composite, VRAM/time report | done, tested on CPU with a fake model; **T4 benchmark pending** ([runbook §6](docs/KAGGLE_RUNBOOK.md)) |
+| M7 | diffusion edit stage (`editing/`): reference frame x seeds, reference-conditioned frames, crop + hard mask composite, VRAM/time report | done; **ran on 2x T4**: FLUX 3 Klein, bf16 (option A), `split` placement, 512 px crop ([runbook §6](docs/KAGGLE_RUNBOOK.md)) |
 | M8 | Week 2 backend: `Edit` table, edit endpoints for C ([API](docs/API.md)), task types segment/track/edit_preview/edit_apply/rebuild, generic worker stages, versioned artifacts + `?version=` before/after | done, tested end to end on CPU (A/C stages as stand-ins) |
 | M9 | report tables from real Kaggle measurements | waiting for the Kaggle run |
 
@@ -71,7 +71,7 @@ Open http://localhost:8000/docs. Use **Authorize** with your email and password 
 | `BACKEND_EDIT_PRECISION` | `bf16` | `bf16` (A), `bf16-fp32` (B), `fp8-bf16` (D); `fp16` (C) only with the next one |
 | `BACKEND_EDIT_ALLOW_FP16` | `0` | `1` = allow fp16 compute (not the spec's dtype; team decision) |
 | `BACKEND_EDIT_PLACEMENT` | `split` | `split` (text encoder on GPU 1), `cuda`, `offload` |
-| `BACKEND_EDIT_LONG_SIDE` | `768` | size of the crop sent to the model |
+| `BACKEND_EDIT_LONG_SIDE` | `768` | size of the crop sent to the model. **Use `512` on 2x T4**: at 768, *edit all frames* (two images per frame) runs out of memory on GPU 0 |
 | `BACKEND_CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173,...` | comma-separated frontend origins |
 
 ## 3. Storage layout
@@ -118,6 +118,13 @@ python worker/kaggle_worker.py --backend-url https://<tunnel> --ml-dir /kaggle/w
 ```
 Token: env `W1_WORKER_TOKEN`. First real run on Kaggle: follow [docs/KAGGLE_RUNBOOK.md](docs/KAGGLE_RUNBOOK.md).
 
+Network: every API call retries connection errors and 5xx for ~7 min (backoff up to 60 s), and a Week 2 input
+download that breaks mid-stream resumes with HTTP Range. `--upload-checkpoint` (~1 GB) is only needed for a
+*fine-tune* rebuild; a *scratch* rebuild never downloads the checkpoint.
+
+Week 2 on Kaggle: also run `bash scripts/setup_kaggle.sh sam2` (segment/track) and start the backend with
+`BACKEND_EDIT_LONG_SIDE=512` and `uvicorn ... --timeout-keep-alive 60`.
+
 ## 6. Expose the backend with Cloudflare Tunnel
 
 The Kaggle worker (and teammates' browsers) need a public HTTPS URL for your local server. Nothing is
@@ -135,7 +142,9 @@ cloudflared tunnel --url http://localhost:8000     # terminal 2
 - give it to the Kaggle worker (`BACKEND_URL`, M4) and to Person C's frontend (`VITE_API_URL` or similar)
 - add the frontend's own origin to `BACKEND_CORS_ORIGINS` if it is served from somewhere other than localhost
 
-The URL dies when `cloudflared` stops. Restarting gives a new URL, which you then update in the notebook.
+The URL dies when `cloudflared` stops, **and also after the laptop loses its connection for more than a minute or
+two** (`cloudflared` then logs `Unauthorized: Tunnel not found` and Kaggle gets `Failed to resolve`). Restarting
+gives a new URL, which you then update in the notebook (cell 5) before restarting the worker.
 
 ### 6b. Named tunnel (stable URL). Needs a free Cloudflare account and a domain on Cloudflare.
 
