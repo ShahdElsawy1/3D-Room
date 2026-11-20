@@ -65,7 +65,14 @@ Pipeline 4,975.9 s, upload 1,353.9 s (worker `4926f4178028`).
 
 ## Week 2: T4 precision micro-benchmark
 
-_not measured_
+GPU: Tesla T4 (compute 7.5), torch 2.11.0+cu130, overflow probe bf16=ok fp16=inf
+
+| option | path | linear ms | linear TFLOPS | attention ms | attention TFLOPS | NaN/inf | error |
+|---|---|---|---|---|---|---|---|
+| A | bf16 weights, bf16 compute | 203.3 | 2.7 | 340.5 | 1.9 | no |  |
+| B | bf16 weights, fp32 compute (up-cast per layer) | 125.5 | 4.3 | 195.2 | 3.2 | no |  |
+| C | fp16 weights, fp16 compute (NOT the spec's dtype) | 24.6 | 22.0 | 46.9 | 13.4 | no |  |
+| D | fp8 storage, up-cast to bf16 per layer | 206.2 | 2.6 | 344.7 | 1.8 | no |  |
 
 
 ## Week 2: rebuild time (poses reused)

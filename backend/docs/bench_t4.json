@@ -1,0 +1,14 @@
+{
+ "gpu": "Tesla T4",
+ "capability": "7.5",
+ "torch": "2.11.0+cu130",
+ "date": "2026-11-20",
+ "rows": [
+  {"option": "A", "path": "bf16 weights, bf16 compute", "linear_ms": 203.3, "attention_ms": 340.49, "linear_tflops": 2.66, "attention_tflops": 1.85, "nan_or_inf": false, "error": null},
+  {"option": "B", "path": "bf16 weights, fp32 compute (up-cast per layer)", "linear_ms": 125.5, "attention_ms": 195.22, "linear_tflops": 4.31, "attention_tflops": 3.23, "nan_or_inf": false, "error": null},
+  {"option": "C", "path": "fp16 weights, fp16 compute (NOT the spec's dtype)", "linear_ms": 24.55, "attention_ms": 46.93, "linear_tflops": 22.04, "attention_tflops": 13.45, "nan_or_inf": false, "error": null},
+  {"option": "D", "path": "fp8 storage, up-cast to bf16 per layer", "linear_ms": 206.25, "attention_ms": 344.74, "linear_tflops": 2.62, "attention_tflops": 1.83, "nan_or_inf": false, "error": null}
+ ],
+ "overflow_probe_bf16": "ok",
+ "overflow_probe_fp16": "inf"
+}
