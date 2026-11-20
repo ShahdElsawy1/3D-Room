@@ -33,6 +33,36 @@ so a dropped Kaggle session can't break the API. The spec warns about this in §
 | M8 | Week 2 backend: `Edit` table, edit endpoints for C ([API](docs/API.md)), task types segment/track/edit_preview/edit_apply/rebuild, generic worker stages, versioned artifacts + `?version=` before/after | done, tested end to end on CPU (A/C stages as stand-ins) |
 | M9 | report tables from real Kaggle measurements | done ([MEASUREMENTS.md](docs/MEASUREMENTS.md), run of 2026-11-20), T4 precision benchmark in [bench_t4.json](docs/bench_t4.json) |
 
+## Results: full run on Kaggle 2x T4 (2026-11-20)
+
+One real room video (DL3DV, 4K, 408 MB), the whole flow through the app: scan → 3D viewer → select an object
+("make the lamp light red") → edit every frame → rebuild → before/after. All numbers are measured; full tables in
+[docs/MEASUREMENTS.md](docs/MEASUREMENTS.md).
+
+| Step | Result |
+|---|---|
+| Scan (Week 1) | 61 frames, poses with VGGT in 97 s (peak 10.3 GB), 3DGS 7,000 iters in 17.7 min, 1.35 M Gaussians, 41 MB splat, held-out PSNR 23.3 / SSIM 0.80 / LPIPS 0.14 |
+| Upload Kaggle → backend | ~0.8 MB/s through the quick tunnel (1.16 GB incl. the 1 GB checkpoint in 22.5 min) |
+| Edit preview | FLUX 3 Klein, bf16, `split`, 768 px crop: model load 213 s, ~3.2 min per candidate, GPU0 13.2 GB / GPU1 8.6 GB |
+| Edit all frames | 512 px crop (768 runs out of memory with two condition images), 59 frames at ~1.9 min each, GPU0 12.2 GB / GPU1 8.6 GB, 0 NaN/flat frames |
+| Rebuild (scratch) | 17.5 min training, 26 min end to end; held-out PSNR 22.95 vs 23.29 for the original |
+
+**Precision on the T4** ([bench_t4.json](docs/bench_t4.json), `editing/bench_t4.py`):
+
+| Option | Path | Linear TFLOPS | Attention TFLOPS | Overflow |
+|---|---|---|---|---|
+| A (used) | bf16 weights, bf16 compute | 2.7 | 1.9 | ok |
+| B | bf16 weights, fp32 compute | 4.3 | 3.2 | ok |
+| C | fp16 weights, fp16 compute (not the spec's dtype) | 22.0 | 13.4 | **inf** |
+| D | fp8 storage, bf16 compute | 2.6 | 1.8 | ok |
+
+The T4 (Turing, compute 7.5) has no bf16 tensor cores, so the spec's bf16 runs ~8x slower than fp16. fp16 overflows
+(the probe returns `inf`), so we kept bf16 for correctness; this is why editing takes ~2 min per frame. fp8 storage
+(D) saves memory but not time: it computes in bf16.
+
+**Lessons from the run**: use a 512 px crop on T4; prefer a *scratch* rebuild on a slow connection (no 1 GB
+checkpoint download); a quick tunnel dies when the laptop's connection drops for more than a minute or two (see §6a).
+
 ## 1. Run locally
 
 Requires Python ≥ 3.10 and `ffmpeg`/`ffprobe` on PATH (Windows: `winget install Gyan.FFmpeg`).
