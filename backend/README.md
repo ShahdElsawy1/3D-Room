@@ -31,7 +31,7 @@ so a dropped Kaggle session can't break the API. The spec warns about this in §
 | M6 | Week 2 model research (FLUX 3 Klein vs Qwen-Image-2.1, T4 precision) | done ([research](docs/W2_DIFFUSION_RESEARCH.md)) |
 | M7 | diffusion edit stage (`editing/`): reference frame x seeds, reference-conditioned frames, crop + hard mask composite, VRAM/time report | done; **ran on 2x T4**: FLUX 3 Klein, bf16 (option A), `split` placement, 512 px crop ([runbook §6](docs/KAGGLE_RUNBOOK.md)) |
 | M8 | Week 2 backend: `Edit` table, edit endpoints for C ([API](docs/API.md)), task types segment/track/edit_preview/edit_apply/rebuild, generic worker stages, versioned artifacts + `?version=` before/after | done, tested end to end on CPU (A/C stages as stand-ins) |
-| M9 | report tables from real Kaggle measurements | waiting for the Kaggle run |
+| M9 | report tables from real Kaggle measurements | done ([MEASUREMENTS.md](docs/MEASUREMENTS.md), run of 2026-11-20); T4 precision micro-benchmark (`editing/bench_t4.py`) not run |
 
 ## 1. Run locally
 
