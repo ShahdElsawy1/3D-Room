@@ -53,7 +53,10 @@ def _ref(kind: str, version: str, required: bool) -> dict:
 
 def inputs_for(task: Task) -> list[dict]:
     eid = task.params["edit_id"]
-    return [_ref(k, eid if v == EDIT else ORIGINAL, req) for k, v, req in INPUTS[task.type]]
+    items = INPUTS[task.type]
+    if task.type == "rebuild" and task.params.get("mode") != "finetune":
+        items = [i for i in items if i[0] != "gs"]  # only a fine-tune reads the checkpoint (~1 GB over the tunnel)
+    return [_ref(k, eid if v == EDIT else ORIGINAL, req) for k, v, req in items]
 
 
 def outputs_for(task: Task) -> list[dict]:
