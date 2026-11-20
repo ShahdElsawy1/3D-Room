@@ -72,6 +72,17 @@ class CallStats:
     degenerate: bool = False  # NaN -> black, or a flat image: the fp16 overflow symptom
 
 
+def to_device(x, device, torch):
+    """Move every tensor inside nested tuples/lists/dicts to `device` (used by the split-placement hook)."""
+    if isinstance(x, torch.Tensor):
+        return x.to(device)
+    if isinstance(x, (list, tuple)):
+        return type(x)(to_device(v, device, torch) for v in x)
+    if isinstance(x, dict):
+        return {k: to_device(v, device, torch) for k, v in x.items()}
+    return x
+
+
 def degenerate_image(img: Image.Image) -> bool:
     a = np.asarray(img.convert("RGB"), dtype=np.float32)
     return bool(a.std() < 1.0)
@@ -163,17 +174,36 @@ class DiffusersEditor(Editor):
         return {k: v for k, v in items if isinstance(v, self.torch.nn.Module)}
 
     def _place(self):
+        t = self.torch
+        main = t.device("cuda:0")
         if self.placement == "offload":
-            if not hasattr(self.pipe, "enable_model_cpu_offload"):
-                raise RuntimeError(f"{self.model}: pipeline has no enable_model_cpu_offload")
-            self.pipe.enable_model_cpu_offload()
+            if hasattr(self.pipe, "enable_model_cpu_offload"):
+                self.pipe.enable_model_cpu_offload()
+            else:  # ModularPipeline (Klein) has no enable_model_cpu_offload: diffusers' group offloading per module
+                from diffusers.hooks import apply_group_offloading
+                for mod in self._modules().values():
+                    apply_group_offloading(mod, onload_device=main, offload_device=t.device("cpu"),
+                                           offload_type="leaf_level")
         elif self.placement == "cuda":
-            self.pipe.to("cuda:0")
-        else:  # split: text encoder(s) on GPU 1, everything else on GPU 0 (research §5). [T4] to verify.
-            if self.torch.cuda.device_count() < 2:
+            self.pipe.to(main)
+        else:  # split: text encoder(s) on GPU 1, everything else on GPU 0 (research §5)
+            if t.cuda.device_count() < 2:
                 raise RuntimeError("placement 'split' needs 2 GPUs")
+            side = t.device("cuda:1")
             for name, mod in self._modules().items():
-                mod.to("cuda:1" if name.startswith("text_encoder") else "cuda:0")
+                if name.startswith("text_encoder"):
+                    mod.to(side)
+                    # the pipeline sends the token ids to its execution device (GPU 0): move them to GPU 1; the
+                    # pipeline moves the embeddings back itself (`out.to(device)` in the Flux3 text encoder step)
+                    mod.register_forward_pre_hook(
+                        lambda _m, args, kwargs: (to_device(args, side, t), to_device(kwargs, side, t)),
+                        with_kwargs=True)
+                else:
+                    mod.to(main)
+            # Found on the T4 run: the pipeline takes its execution device from its FIRST component, the text
+            # encoder, so it put the image on GPU 1 next to a VAE on GPU 0. Pin it to GPU 0 (this instance only).
+            cls = type(self.pipe)
+            self.pipe.__class__ = type(cls.__name__, (cls,), {"_execution_device": property(lambda _s: main)})
 
     # -- calls -----------------------------------------------------------------------------------------------
     def info(self) -> dict:

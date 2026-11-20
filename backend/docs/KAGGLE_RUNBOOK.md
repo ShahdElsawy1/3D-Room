@@ -1,11 +1,11 @@
 # Runbook: first real run on Kaggle (GPU + Cloudflare tunnel)
 
-Everything up to here has been tested locally with a CPU stub. The steps below are the part that **can only be
-checked by a person with a Kaggle account**. Tick them off in order; each has what to expect and what to do if it
+These steps were run end to end on Kaggle 2x T4 on 2026-11-20 (scan → edit → scratch rebuild → before/after). The
+steps below **need a person with a Kaggle account**. Tick them off in order; each has what to expect and what to do if it
 doesn't happen.
 
 ## 0. Prerequisites (once)
-- [ ] `git push` the `backend` branch (the notebook clones it). If the repo is private, upload `3D-Room/` as a Kaggle
+- [ ] The notebook clones `BRANCH` (currently `fix/klein-placement`, `main` once merged). If the repo is private, upload `3D-Room/` as a Kaggle
       Dataset instead and use the commented line in cell 1.
 - [ ] Install cloudflared on your machine: `winget install --id Cloudflare.cloudflared`.
 - [ ] Kaggle: phone-verified account (needed for GPU + Internet).
@@ -43,7 +43,7 @@ curl -s -X POST $B/projects/$PID/reconstruct -H "Authorization: Bearer $TOK" -H 
 |---|---|---|
 | - [ ] worker log | `connected to …`, `claimed task …`, `video downloaded` | `token rejected`: secret. Claim errors: tunnel |
 | - [ ] `GET /tasks/{id}` every few seconds | `stage` moves *extracting frames → estimating poses → training → exporting*, `progress` rises | progress stuck at 0 while the log shows `[progress]` lines: `W1_WORKER_TOKEN` not set in the environment of cell 6 |
-| - [ ] upload phase | `stage: "uploading results"`, 99 %; log lines `uploaded frames/splat/…` | `failed after 6 tries`: tunnel dropped for > ~2 min. The task re-queues (lease) and the next run resumes uploads |
+| - [ ] upload phase | `stage: "uploading results"`, 99 %; log lines `uploaded frames/splat/…` | `failed after 12 tries`: tunnel dropped for > ~7 min, or the quick tunnel died (`Failed to resolve`): restart `cloudflared`, new URL in cell 5. The task re-queues (lease) and the next run resumes uploads |
 | - [ ] done | `status: done`, `result.stages.*.seconds / peak_vram_mb`, `result.uploads.*.mb_per_s` | `error` field has the stage's message + log tail |
 | - [ ] scene | `GET /projects/{id}/scene`; download `splat.url` in a browser | |
 
@@ -102,8 +102,8 @@ A = f"--project-dir {P} --edit-id bench --prompt 'make the sofa dark green leath
 | Check | Expected | If not |
 |---|---|---|
 | bench_t4 rows | A and B slow, C fast, `nan_or_inf` false for A/B/D | an `error` in a row = that dtype path has no kernel on Turing: note it, it rules the option out |
-| preview | `candidates/seed_*.png`, report `seconds`, `peak_vram_mb` per GPU | OOM with `split` → `--placement offload`; error mentioning `.transformer` or layerwise casting → option B/D unsupported for this pipeline, note it |
-| frames | `edited/*.png`, `changed_outside_px: 0` for every frame | |
+| preview | `candidates/seed_*.png`, report `seconds`, `peak_vram_mb` per GPU (measured: 768 px, model load 213 s, ~189 s per image, GPU0 13.2 GB / GPU1 8.6 GB) | OOM with `split` → `--placement offload`; error mentioning `.transformer` or layerwise casting → option B/D unsupported for this pipeline, note it |
+| frames | `edited/*.png`, `changed_outside_px: 0` for every frame (measured: ~2 min per frame at 512 px) | OOM at 768 px (two condition images): `--long-side 512` / backend `BACKEND_EDIT_LONG_SIDE=512` |
 | `degenerate: true` | never for A/B/D | black/flat output = NaNs: report it |
 
 Option C (fp16) only after the team decides it: add `--precision fp16 --allow-fp16`. Qwen comparison: same

@@ -99,7 +99,7 @@ def bench_table(b: dict) -> str:
 def from_backend(a) -> dict:
     import requests
     base = a.backend_url.rstrip("/")
-    tok = requests.post(f"{base}/auth/login", data={"username": a.email, "password": a.password}, timeout=30)
+    tok = requests.post(f"{base}/auth/login", json={"email": a.email, "password": a.password}, timeout=30)
     tok.raise_for_status()
     h = {"Authorization": f"Bearer {tok.json()['access_token']}"}
     tasks = requests.get(f"{base}/projects/{a.project}/tasks", headers=h, timeout=30).json()
