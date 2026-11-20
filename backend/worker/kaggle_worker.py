@@ -67,7 +67,7 @@ class LeaseLost(Exception):
 class Api:
     """requests wrapper: retries connection errors and 5xx (tunnel hiccups) with backoff, never 4xx."""
 
-    def __init__(self, base: str, token: str, retries: int = 6):
+    def __init__(self, base: str, token: str, retries: int = 12):
         self.base = base.rstrip("/")
         self.s = requests.Session()
         self.s.headers["Authorization"] = f"Bearer {token}"
@@ -154,9 +154,31 @@ def fetch_artifact(api: Api, pid: str, ref: dict, project: Path, tmp: Path) -> b
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
     target = tmp / f"in_{ref['kind']}_{ref['version']}" if ref["is_dir"] else dst
-    with target.open("wb") as f:
-        for block in r.iter_content(1 << 20):
-            f.write(block)
+    total = int(r.headers.get("Content-Length") or 0) or None
+    target.unlink(missing_ok=True)
+    delay = 5.0
+    for attempt in range(1, 11):                      # a dropped connection mid-stream resumes with HTTP Range
+        try:
+            if attempt > 1:
+                have = target.stat().st_size if target.exists() else 0
+                r = api.call("GET", url, ok=(200, 206), stream=True,
+                             headers={"Range": f"bytes={have}-"} if have else {})
+                if r.status_code == 200:              # server ignored the Range: start over
+                    target.unlink(missing_ok=True)
+            with target.open("ab") as f:
+                for block in r.iter_content(1 << 20):
+                    f.write(block)
+            if total is None or target.stat().st_size == total:
+                break
+            raise requests.ConnectionError(f"short read: {target.stat().st_size}/{total} bytes")
+        except requests.RequestException as e:
+            if attempt == 10:
+                raise
+            have = target.stat().st_size if target.exists() else 0
+            log(f"download {ref['kind']} interrupted at {have / 2**20:.1f} MB ({e.__class__.__name__}), "
+                f"resuming in {delay:.0f}s ({attempt}/9)")
+            time.sleep(delay)
+            delay = min(delay * 2, 60)
     if ref["is_dir"]:
         with tarfile.open(target) as tf:
             for m in tf.getmembers():                 # the backend names entries by their path in the project
